@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Block Puzzle Online</title>
+  <meta name="description" content="Play Block Puzzle online against other players! Competitive multiplayer block puzzle game.">
+  <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+  <!-- ═══════════════════════════════════════
+       SCREEN: AUTH (Login)
+  ═══════════════════════════════════════ -->
+  <div id="screen-auth" class="screen active">
+    <div class="auth-container">
+      <div class="auth-logo">BLOCK<br>PUZZLE</div>
+      <div class="auth-logo-sub">⚡ ONLINE MULTIPLAYER ⚡</div>
+
+      <div class="auth-card">
+        <button class="auth-btn google-btn" id="btn-google-login" onclick="handleGoogleLogin()">
+          <span class="btn-icon">🔵</span>
+          Sign in with Google
+        </button>
+
+        <div class="auth-divider">OR</div>
+
+        <button class="auth-btn" id="btn-guest-login" onclick="handleGuestLogin()">
+          <span class="btn-icon">👤</span>
+          Play as Guest
+        </button>
+      </div>
+
+      <div id="auth-status" style="font-family: var(--font-ui); font-size: 12px; color: rgba(255,245,214,0.5); min-height: 18px; text-align: center;"></div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════
+       SCREEN: USERNAME SELECTION
+  ═══════════════════════════════════════ -->
+  <div id="screen-username" class="screen">
+    <div class="username-container">
+      <div class="auth-logo" style="font-size: clamp(28px, 8vw, 40px);">CHOOSE YOUR NAME</div>
+
+      <div class="username-card">
+        <input type="text" class="username-input" id="username-input" placeholder="Enter username"
+          maxlength="14" autocomplete="off" spellcheck="false">
+        <div class="username-hint">
+          Letters and numbers only • Max 14 characters • No spaces
+        </div>
+        <div class="username-error" id="username-error"></div>
+        <button class="auth-btn" id="btn-set-username" onclick="handleSetUsername()">
+          <span class="btn-icon">✅</span>
+          CONFIRM
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════
+       SCREEN: MAIN MENU
+  ═══════════════════════════════════════ -->
+  <div id="screen-menu" class="screen">
+    <div class="menu-container">
+      <div class="menu-header">
+        <div class="menu-title">BLOCK PUZZLE</div>
+        <div class="menu-subtitle">ONLINE MULTIPLAYER</div>
+      </div>
+
+      <div class="menu-user-bar">
+        <div class="menu-user-avatar">🎮</div>
+        <div class="menu-user-info">
+          <div class="menu-user-name" id="menu-username">Player</div>
+          <div class="menu-user-id" id="menu-player-id">ID: --------</div>
+        </div>
+      </div>
+
+      <div class="menu-buttons">
+        <button class="menu-btn play-btn" onclick="startMatchmaking()">
+          <span class="btn-icon">🎮</span>
+          PLAY
+        </button>
+        <button class="menu-btn vs-btn" onclick="showVsScreen()">
+          <span class="btn-icon">⚔️</span>
+          VS
+        </button>
+        <button class="menu-btn profile-btn" onclick="showProfile()">
+          <span class="btn-icon">👤</span>
+          PROFILE
+        </button>
+      </div>
+
+      <div class="menu-footer">
+        <button class="menu-footer-btn" id="menu-mute-btn" onclick="toggleMenuMute()">🔊</button>
+        <button class="menu-footer-btn" id="menu-logout-btn" onclick="handleLogout()">🚪</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════
+       SCREEN: MATCHMAKING (Loading)
+  ═══════════════════════════════════════ -->
+  <div id="screen-matchmaking" class="screen">
+    <div class="matchmaking-container">
+      <div class="matchmaking-spinner"></div>
+      <div class="matchmaking-text">Searching for opponent<span class="matchmaking-dots" id="matchmaking-dots">...</span></div>
+      <button class="cancel-btn" onclick="cancelMatchmaking()">✖ CANCEL</button>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════
+       SCREEN: VS (Friends / Online Players)
+  ═══════════════════════════════════════ -->
+  <div id="screen-vs" class="screen">
+    <div class="vs-container">
+      <div class="vs-header">
+        <button class="back-btn" onclick="showMenu()">◀</button>
+        <div class="vs-title">⚔️ VS MODE</div>
+      </div>
+
+      <div class="vs-search">
+        <input type="text" class="vs-search-input" id="vs-search-input"
+          placeholder="Search by Player ID (e.g. B2704817)" maxlength="8" autocomplete="off">
+        <button class="vs-search-btn" onclick="searchPlayerById()">ADD</button>
+      </div>
+
+      <div class="vs-tabs">
+        <button class="vs-tab active" id="tab-online" onclick="switchVsTab('online')">🟢 Online</button>
+        <button class="vs-tab" id="tab-friends" onclick="switchVsTab('friends')">👥 Friends</button>
+      </div>
+
+      <div class="vs-list" id="vs-player-list">
+        <div class="vs-empty">Looking for players...</div>
+      </div>
+
+      <div id="vs-search-result" class="hidden"></div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════
+       SCREEN: PROFILE
+  ═══════════════════════════════════════ -->
+  <div id="screen-profile" class="screen">
+    <div class="profile-container">
+      <div class="vs-header">
+        <button class="back-btn" onclick="showMenu()">◀</button>
+        <div class="vs-title">👤 PROFILE</div>
+      </div>
+
+      <div class="profile-card">
+        <div class="profile-avatar">🎮</div>
+        <div class="profile-name" id="profile-name">Player</div>
+        <div class="profile-id" id="profile-id">ID: --------</div>
+
+        <div class="profile-stats">
+          <div class="stat-box">
+            <div class="stat-value" id="stat-played">0</div>
+            <div class="stat-label">Games</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-value" id="stat-wins">0</div>
+            <div class="stat-label">Wins</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-value" id="stat-losses">0</div>
+            <div class="stat-label">Losses</div>
+          </div>
+          <div class="stat-box full-width">
+            <div class="stat-value" id="stat-winrate">0%</div>
+            <div class="stat-label">Win Rate</div>
+            <div class="win-rate-bar">
+              <div class="win-rate-fill" id="winrate-fill" style="width: 0%"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="profile-guest-warn hidden" id="guest-warning">
+        ⚠️ Guest account expires in <span id="guest-days-left">30</span> days.
+        Sign in with Google to keep your progress!
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════
+       SCREEN: GAME (Multiplayer)
+  ═══════════════════════════════════════ -->
+  <div id="screen-game" class="screen">
+    <div class="game-container">
+      <!-- Game Header: Timer + Scores -->
+      <div class="game-header">
+        <div class="game-player-score is-me" id="gps-me">
+          <span class="gps-avatar">🔵</span>
+          <span class="gps-name" id="gps-me-name">You</span>
+          <span class="gps-score" id="gps-me-score">0</span>
+        </div>
+
+        <div class="game-timer-main" id="game-timer-main">
+          <span class="game-timer-icon">⏱</span>
+          <span class="game-timer-val" id="game-timer-val">90</span>
+        </div>
+
+        <div class="game-player-score" id="gps-opp">
+          <span class="gps-avatar">🔴</span>
+          <span class="gps-name" id="gps-opp-name">Opp</span>
+          <span class="gps-score" id="gps-opp-score">0</span>
+        </div>
+      </div>
+
+      <!-- Board -->
+      <div id="board-wrapper">
+        <div id="board"></div>
+      </div>
+
+      <!-- Turn timer + indicator -->
+      <div class="turn-timer-section">
+        <div class="turn-indicator my-turn" id="turn-indicator">YOUR TURN</div>
+        <div class="turn-timer-bar">
+          <div class="turn-timer-fill" id="turn-timer-fill"></div>
+        </div>
+      </div>
+
+      <!-- Inventory -->
+      <div id="inventory"></div>
+
+      <!-- Coins display + Power-ups -->
+      <div style="display: flex; align-items: center; gap: 10px; width: calc(100% - 24px); max-width: 480px; justify-content: center; margin-top: 4px;">
+        <div class="game-coins" id="game-coins">
+          <span class="game-coins-icon">🪙</span>
+          <span class="game-coins-val" id="game-coins-val">100</span>
+        </div>
+      </div>
+
+      <div id="powerups">
+        <button class="powerup-btn disabled" id="btn-rotate" onclick="usePowerRotate()">
+          <span class="pu-icon">🔄</span>
+          <span class="pu-label">ROTATE</span>
+          <span class="pu-cost">🪙20</span>
+        </button>
+        <button class="powerup-btn disabled" id="btn-hammer" onclick="usePowerHammer()">
+          <span class="pu-icon">🔨</span>
+          <span class="pu-label">HAMMER</span>
+          <span class="pu-cost">🪙30</span>
+          <span class="pu-uses" id="hammer-uses">3/3</span>
+        </button>
+        <button class="powerup-btn disabled" id="btn-refresh" onclick="usePowerRefresh()">
+          <span class="pu-icon">🔃</span>
+          <span class="pu-label">REFRESH</span>
+          <span class="pu-cost">🪙40</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Combo Banner -->
+    <div id="combo-banner">✨ COMBO! ✨</div>
+  </div>
+
+  <!-- ═══════════════════════════════════════
+       GAME RESULT OVERLAY
+  ═══════════════════════════════════════ -->
+  <div class="result-overlay" id="result-overlay">
+    <div class="result-title win" id="result-title">YOU WIN!</div>
+    <div class="result-scores">
+      <div class="result-player">
+        <div class="result-player-name" id="result-me-name">You</div>
+        <div class="result-player-score" id="result-me-score">0</div>
+      </div>
+      <div class="result-vs">VS</div>
+      <div class="result-player">
+        <div class="result-player-name" id="result-opp-name">Opp</div>
+        <div class="result-player-score" id="result-opp-score">0</div>
+      </div>
+    </div>
+    <button class="result-btn" onclick="returnToMenu()">BACK TO MENU</button>
+  </div>
+
+  <!-- ═══════════════════════════════════════
+       INVITATION OVERLAY (incoming invite)
+  ═══════════════════════════════════════ -->
+  <div class="invite-overlay" id="invite-overlay">
+    <div class="invite-card">
+      <div class="invite-icon">⚔️</div>
+      <div class="invite-title">CHALLENGE!</div>
+      <div class="invite-from" id="invite-from-name">Player wants to battle!</div>
+      <div class="invite-timer-bar">
+        <div class="invite-timer-fill" id="invite-timer-fill"></div>
+      </div>
+      <div class="invite-actions">
+        <button class="invite-accept" onclick="acceptInvite()">✅ ACCEPT</button>
+        <button class="invite-decline" onclick="declineInvite()">✖ DECLINE</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════
+       SENT INVITE OVERLAY (waiting for response)
+  ═══════════════════════════════════════ -->
+  <div class="invite-overlay" id="sent-invite-overlay">
+    <div class="invite-card">
+      <div class="invite-icon">📨</div>
+      <div class="invite-title">INVITE SENT</div>
+      <div class="invite-from invite-waiting-text" id="sent-invite-target">Waiting for response...</div>
+      <div class="invite-timer-bar">
+        <div class="invite-timer-fill" id="sent-invite-timer-fill"></div>
+      </div>
+      <button class="cancel-btn" onclick="cancelSentInvite()" style="width: 100%;">✖ CANCEL</button>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════
+       TOAST NOTIFICATION
+  ═══════════════════════════════════════ -->
+  <div class="toast" id="toast"></div>
+
+  <!-- ═══════════════════════════════════════
+       SCRIPTS (ES Modules)
+  ═══════════════════════════════════════ -->
+  <script type="module" src="app.js"></script>
+
+</body>
+</html>
