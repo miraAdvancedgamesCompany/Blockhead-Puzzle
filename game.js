@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════
-//  Multiplayer Game Engine
+//  Multiplayer Game Engine — Fixed Turn System
 // ═══════════════════════════════════════
 import {
   db, ref, set, get, update, onValue, off
@@ -65,6 +65,11 @@ let gameEndsAt = 0;
 let turnStartedAt = 0;
 let gameActive = false;
 
+// Track processed moves to avoid double-processing
+let lastProcessedMoveTimestamp = 0;
+let prevTurnValue = null;
+let isFirstLoad = true;
+
 // Callbacks
 let onGameEnd = null;
 
@@ -80,7 +85,6 @@ export async function startGame(gId) {
   gameId = gId;
   gameRef = ref(db, `games/${gameId}`);
 
-  // Get initial game state
   const snap = await get(gameRef);
   if (!snap.exists()) {
     console.error('Game not found:', gameId);
@@ -100,10 +104,12 @@ export async function startGame(gId) {
   }
 
   // Initialize local state
-  localGrid = (gameData.board || new Array(64).fill(null)).map(cell => {
-    if (cell && typeof cell === 'object') return cell;
-    return null;
-  });
+  localGrid = new Array(ROWS * COLS).fill(null);
+  if (gameData.board) {
+    localGrid = gameData.board.map(cell =>
+      (cell && typeof cell === 'object') ? cell : null
+    );
+  }
 
   myCoins = 100;
   myScore = 0;
@@ -114,13 +120,16 @@ export async function startGame(gId) {
   hammerMode = false;
   isClearing = false;
   gameActive = true;
+  lastProcessedMoveTimestamp = 0;
+  prevTurnValue = null;
+  isFirstLoad = true;
 
   gameEndsAt = gameData.gameEndsAt;
   turnStartedAt = gameData.turnStartedAt;
   currentTurn = gameData.currentTurn;
   isMyTurn = (currentTurn === myRole);
 
-  // Generate initial shapes
+  // Generate initial shapes locally (private)
   myShapes = [randomShape(), randomShape(), randomShape()];
 
   // Build the UI
@@ -136,96 +145,127 @@ export async function startGame(gId) {
   startGameTimer();
   startTurnTimer();
 
-  // Start BGM
+  // BGM
   sound.startBGM();
 
-  // Listen for game changes
+  // Listen for game changes from Firebase
   listenForGameChanges();
 
-  // Setup board hammer click
+  // Setup hammer click handler
   setupBoardInteraction();
 }
 
 // ═══════════════════════════════════════
-//  FIREBASE LISTENERS
+//  FIREBASE LISTENER — Turn & Board Sync
 // ═══════════════════════════════════════
 
 function listenForGameChanges() {
   gameListener = onValue(gameRef, (snap) => {
-    if (!snap.exists()) return;
+    if (!snap.exists() || !gameActive) return;
     const data = snap.val();
 
+    // Game finished?
     if (data.status === 'finished') {
       endGame(data);
       return;
     }
 
-    // Update board from server
-    if (data.board) {
-      localGrid = data.board.map(cell => {
-        if (cell && typeof cell === 'object') return cell;
-        return null;
-      });
-      paintGrid();
-    }
-
-    // Update scores
+    // ── Update scores from server ──
     if (data.players) {
       myScore = data.players[myRole]?.score || 0;
       oppScore = data.players[oppRole]?.score || 0;
-
-      const myCoinsServer = data.players[myRole]?.coins;
-      if (myCoinsServer !== undefined) myCoins = myCoinsServer;
+      const serverCoins = data.players[myRole]?.coins;
+      if (serverCoins !== undefined && serverCoins !== null) myCoins = serverCoins;
     }
 
-    // Update turn
-    const prevTurn = currentTurn;
-    currentTurn = data.currentTurn;
-    isMyTurn = (currentTurn === myRole);
-    turnStartedAt = data.turnStartedAt || Date.now();
+    // ── Handle TURN changes ──
+    const newTurn = data.currentTurn;
+    if (newTurn !== prevTurnValue) {
+      const wasFirst = isFirstLoad;
+      isFirstLoad = false;
+      prevTurnValue = newTurn;
+      currentTurn = newTurn;
+      isMyTurn = (currentTurn === myRole);
+      turnStartedAt = data.turnStartedAt || Date.now();
 
-    if (prevTurn !== currentTurn) {
-      // Turn changed
+      // Reset hammer uses for new turn
       hammerUsesThisTurn = 0;
       if (hammerMode) cancelHammer();
       selectedSlot = null;
+
+      // Restart turn timer
       startTurnTimer();
-      sound.play('turn');
+
+      // Play sound (not on first load)
+      if (!wasFirst) {
+        sound.play('turn');
+      }
     }
 
-    // Update last move visuals (if opponent placed)
-    if (data.lastMove && data.lastMove.by === oppRole) {
-      showOpponentMove(data.lastMove);
+    // ── Handle opponent's MOVE (board update) ──
+    if (data.lastMove && data.lastMove.by === oppRole &&
+        data.lastMove.timestamp > lastProcessedMoveTimestamp) {
+      lastProcessedMoveTimestamp = data.lastMove.timestamp;
+
+      // Update board from server (opponent's move + any line clears)
+      if (data.board) {
+        // Show pop-in animation on placed cells
+        const indices = data.lastMove.indices || [];
+        indices.forEach(i => {
+          const cell = document.querySelector(`.cell[data-i="${i}"]`);
+          if (cell) {
+            cell.classList.add('pop-in');
+            setTimeout(() => cell.classList.remove('pop-in'), 400);
+          }
+        });
+
+        // Detect cells that were cleared (present in old grid, gone in new)
+        const newBoard = data.board.map(c => (c && typeof c === 'object') ? c : null);
+        const clearedCells = [];
+        for (let i = 0; i < ROWS * COLS; i++) {
+          if (localGrid[i] && !newBoard[i]) {
+            clearedCells.push(i);
+          }
+        }
+
+        // If lines were cleared by opponent, show animation
+        if (clearedCells.length > 0) {
+          clearedCells.forEach(i => {
+            const cell = document.querySelector(`.cell[data-i="${i}"]`);
+            if (cell) {
+              cell.classList.add('clear-pop');
+              const clr = localGrid[i];
+              const r = cell.getBoundingClientRect();
+              sparkle(r.left + r.width / 2, r.top + r.height / 2, clr ? clr.bg : '#F7C948');
+            }
+          });
+
+          sound.play('pop');
+          document.getElementById('board-wrapper').classList.add('shake');
+          setTimeout(() => document.getElementById('board-wrapper').classList.remove('shake'), 400);
+
+          // Update grid after animation
+          setTimeout(() => {
+            localGrid = newBoard;
+            paintGrid();
+          }, 300);
+        } else {
+          localGrid = newBoard;
+          paintGrid();
+        }
+      }
+
+      sound.play('place');
+    } else if (data.lastMove && data.lastMove.by === myRole) {
+      // Our own move echoed back — just ensure board is synced
+      // Don't re-animate, just update if needed
     }
 
+    // Update UI
     updateGameUI(data);
     updateTurnState();
     updatePowerupButtons();
   });
-}
-
-function showOpponentMove(move) {
-  if (!move || !move.indices || !move.color) return;
-
-  // Animate opponent's placement
-  move.indices.forEach(i => {
-    const cell = document.querySelector(`.cell[data-i="${i}"]`);
-    if (cell) {
-      cell.classList.add('pop-in');
-      setTimeout(() => cell.classList.remove('pop-in'), 400);
-    }
-  });
-
-  // Check for line clears caused by opponent
-  setTimeout(() => {
-    checkLinesForOpponent();
-  }, 200);
-}
-
-function checkLinesForOpponent() {
-  // Lines are checked server-side via the lastMove handler
-  // Just re-paint the grid from server state
-  paintGrid();
 }
 
 // ═══════════════════════════════════════
@@ -277,19 +317,16 @@ function paintGrid() {
 // ═══════════════════════════════════════
 
 function updateGameUI(data) {
-  // Player names and scores
   const myData = data.players[myRole];
   const oppData = data.players[oppRole];
 
-  document.getElementById('gps-me-name').textContent = myData.username || 'You';
-  document.getElementById('gps-me-score').textContent = myData.score || 0;
-  document.getElementById('gps-opp-name').textContent = oppData.username || 'Opp';
-  document.getElementById('gps-opp-score').textContent = oppData.score || 0;
+  document.getElementById('gps-me-name').textContent = myData?.username || 'You';
+  document.getElementById('gps-me-score').textContent = myScore;
+  document.getElementById('gps-opp-name').textContent = oppData?.username || 'Opp';
+  document.getElementById('gps-opp-score').textContent = oppScore;
 
-  // Coins
   document.getElementById('game-coins-val').textContent = myCoins;
 
-  // Active turn indicator on score boxes
   document.getElementById('gps-me').classList.toggle('active-turn', currentTurn === myRole);
   document.getElementById('gps-opp').classList.toggle('active-turn', currentTurn === oppRole);
 }
@@ -309,6 +346,7 @@ function updateTurnState() {
     indicator.className = 'turn-indicator opponent-turn';
     inventory.classList.add('disabled');
     powerups.classList.add('disabled');
+    if (hammerMode) cancelHammer();
   }
 }
 
@@ -320,16 +358,14 @@ function startGameTimer() {
   if (gameTimerInterval) clearInterval(gameTimerInterval);
 
   gameTimerInterval = setInterval(() => {
+    if (!gameActive) return;
+
     const remaining = Math.max(0, Math.ceil((gameEndsAt - Date.now()) / 1000));
     const timerEl = document.getElementById('game-timer-val');
     const timerBox = document.getElementById('game-timer-main');
 
     if (timerEl) timerEl.textContent = remaining;
-
-    // Warning state when < 15s
-    if (timerBox) {
-      timerBox.classList.toggle('warning', remaining <= 15);
-    }
+    if (timerBox) timerBox.classList.toggle('warning', remaining <= 15);
 
     if (remaining <= 10 && remaining > 0 && remaining % 2 === 0) {
       sound.play('timerWarn');
@@ -337,7 +373,6 @@ function startGameTimer() {
 
     if (remaining <= 0) {
       clearInterval(gameTimerInterval);
-      // Game over — let the listener handle it
       finishGame();
     }
   }, 250);
@@ -351,6 +386,8 @@ function startTurnTimer() {
   const turnStart = turnStartedAt || Date.now();
 
   turnTimerInterval = setInterval(() => {
+    if (!gameActive) return;
+
     const elapsed = Date.now() - turnStart;
     const remaining = Math.max(0, 1 - elapsed / turnDuration);
 
@@ -361,52 +398,92 @@ function startTurnTimer() {
 
     if (elapsed >= turnDuration) {
       clearInterval(turnTimerInterval);
-
-      // If it's our turn, switch turn
-      if (isMyTurn && gameActive) {
-        switchTurn();
+      // Either player can trigger the turn switch
+      if (gameActive) {
+        forceEndTurn();
       }
     }
   }, 100);
 }
 
-async function switchTurn() {
-  if (!gameActive) return;
+// Force end turn when 10s timer runs out
+async function forceEndTurn() {
+  if (!gameActive || !gameRef) return;
 
-  const newTurn = isMyTurn ? oppRole : myRole;
+  const newTurn = (currentTurn === 'player1') ? 'player2' : 'player1';
   const now = Date.now();
 
-  // Reset hammer uses for new turn
-  await update(gameRef, {
+  try {
+    await update(gameRef, {
+      currentTurn: newTurn,
+      turnStartedAt: now
+    });
+  } catch (e) {
+    console.error('Failed to switch turn:', e);
+  }
+}
+
+// ═══════════════════════════════════════
+//  ATOMIC MOVE + TURN SWITCH
+// ═══════════════════════════════════════
+
+async function sendMoveAndSwitchTurn(indices, color) {
+  if (!gameRef || !gameActive) return;
+
+  const boardToSend = localGrid.map(cell => {
+    if (!cell) return null;
+    return { bg: cell.bg, shine: cell.shine, shadow: cell.shadow };
+  });
+
+  const newTurn = oppRole;
+  const now = Date.now();
+
+  // ATOMIC update: board + score + coins + turn switch all at once
+  const updates = {
+    board: boardToSend,
+    [`players/${myRole}/score`]: myScore,
+    [`players/${myRole}/coins`]: myCoins,
+    [`players/${oppRole}/hammerUsesThisTurn`]: 0,
     currentTurn: newTurn,
     turnStartedAt: now,
-    [`players/${myRole}/hammerUsesThisTurn`]: 0
-  });
+    lastMove: {
+      by: myRole,
+      indices: indices,
+      color: { bg: color.bg, shine: color.shine, shadow: color.shadow },
+      timestamp: now
+    }
+  };
+
+  try {
+    await update(gameRef, updates);
+  } catch (e) {
+    console.error('Failed to send move:', e);
+  }
 }
 
 async function finishGame() {
   if (!gameActive) return;
   gameActive = false;
 
-  // Determine winner
   const snap = await get(gameRef);
   if (!snap.exists()) return;
 
   const data = snap.val();
+  if (data.status === 'finished') return; // Already finished by other player
+
   const myFinalScore = data.players[myRole]?.score || 0;
   const oppFinalScore = data.players[oppRole]?.score || 0;
 
-  let result = 'draw';
-  if (myFinalScore > oppFinalScore) result = 'win';
-  else if (myFinalScore < oppFinalScore) result = 'lose';
+  let winnerRole = 'draw';
+  if (myFinalScore > oppFinalScore) winnerRole = myRole;
+  else if (oppFinalScore > myFinalScore) winnerRole = oppRole;
 
-  // Update game status
   await update(gameRef, {
     status: 'finished',
     result: {
-      winner: myFinalScore > oppFinalScore ? myRole : (oppFinalScore > myFinalScore ? oppRole : 'draw'),
-      [`${myRole}Score`]: myFinalScore,
-      [`${oppRole}Score`]: oppFinalScore
+      winner: winnerRole,
+      player1Score: data.players.player1?.score || 0,
+      player2Score: data.players.player2?.score || 0
     }
   });
 
@@ -417,8 +494,10 @@ async function finishGame() {
   const stats = statsSnap.exists() ? statsSnap.val() : { gamesPlayed: 0, wins: 0, losses: 0 };
 
   stats.gamesPlayed = (stats.gamesPlayed || 0) + 1;
-  if (result === 'win') stats.wins = (stats.wins || 0) + 1;
-  else if (result === 'lose') stats.losses = (stats.losses || 0) + 1;
+  const iWon = (winnerRole === myRole);
+  const iLost = (winnerRole !== 'draw' && winnerRole !== myRole);
+  if (iWon) stats.wins = (stats.wins || 0) + 1;
+  if (iLost) stats.losses = (stats.losses || 0) + 1;
 
   await set(statsRef, stats);
 }
@@ -426,11 +505,9 @@ async function finishGame() {
 function endGame(data) {
   gameActive = false;
 
-  // Stop timers
   if (gameTimerInterval) clearInterval(gameTimerInterval);
   if (turnTimerInterval) clearInterval(turnTimerInterval);
 
-  // Stop listening
   if (gameListener) {
     off(gameRef);
     gameListener = null;
@@ -438,7 +515,6 @@ function endGame(data) {
 
   sound.stopBGM();
 
-  // Determine result
   const myFinalScore = data.players[myRole]?.score || 0;
   const oppFinalScore = data.players[oppRole]?.score || 0;
 
@@ -479,6 +555,7 @@ function refillShapes() {
 
 function renderInventory() {
   const inv = document.getElementById('inventory');
+  if (!inv) return;
   inv.innerHTML = '';
 
   for (let s = 0; s < 3; s++) {
@@ -533,25 +610,26 @@ function buildShapeEl(shapeData, slotIdx) {
 }
 
 // ═══════════════════════════════════════
-//  DRAG & DROP
+//  DRAG & DROP — Mobile-friendly
 // ═══════════════════════════════════════
+
+const DRAG_THRESHOLD = ('ontouchstart' in window) ? 15 : 8; // Larger threshold on mobile
 
 function getDragOffset() {
   return Math.max(30, window.innerHeight * 0.04);
 }
 
 function setupDragForShape(el, slotIdx) {
-  el.addEventListener('pointerdown', (e) => onPointerDown(e, el, slotIdx));
+  el.addEventListener('pointerdown', (e) => onPointerDown(e, el, slotIdx), { passive: false });
 }
 
 function onPointerDown(e, el, slotIdx) {
   if (isClearing || !isMyTurn || !gameActive || hammerMode || dragging) return;
   e.preventDefault();
+  e.stopPropagation();
 
   const shape = myShapes[slotIdx];
   if (!shape) return;
-
-  sound.tryPendingBGM();
 
   dragging = {
     slotIdx,
@@ -564,8 +642,8 @@ function onPointerDown(e, el, slotIdx) {
     hasMoved: false
   };
 
-  document.addEventListener('pointermove', globalPointerMove);
-  document.addEventListener('pointerup', globalPointerUp);
+  document.addEventListener('pointermove', globalPointerMove, { passive: false });
+  document.addEventListener('pointerup', globalPointerUp, { passive: false });
   document.addEventListener('pointercancel', globalPointerCancel);
 }
 
@@ -613,7 +691,7 @@ function globalPointerMove(e) {
   const dx = e.clientX - dragging.startX;
   const dy = e.clientY - dragging.startY;
 
-  if (!dragging.hasMoved && Math.sqrt(dx * dx + dy * dy) < 8) return;
+  if (!dragging.hasMoved && Math.sqrt(dx * dx + dy * dy) < DRAG_THRESHOLD) return;
 
   if (!dragging.hasMoved) {
     dragging.hasMoved = true;
@@ -644,6 +722,7 @@ function globalPointerUp(e) {
   if (!dragging) return;
   e.preventDefault();
 
+  // TAP (no significant movement) → select shape
   if (!dragging.hasMoved) {
     selectShape(dragging.slotIdx);
     dragging = null;
@@ -658,7 +737,7 @@ function globalPointerUp(e) {
   let placed = false;
 
   if (cells && canPlace(cells.indices, localGrid)) {
-    // PLACE the shape!
+    // ── PLACE the shape ──
     cells.indices.forEach(i => {
       localGrid[i] = color;
       const cell = document.querySelector(`.cell[data-i="${i}"]`);
@@ -680,17 +759,14 @@ function globalPointerUp(e) {
     if (dragEl) dragEl.remove();
     el.remove();
 
-    // Send move to server and check lines
+    // Check lines THEN send move + switch turn atomically
     setTimeout(() => {
       checkLines(() => {
-        // After lines are checked, send state to server
-        sendMoveToServer(cells.indices, color);
+        // Send FINAL board state + switch turn in ONE update
+        sendMoveAndSwitchTurn(cells.indices, color);
 
         if (myShapes.every(s => !s)) refillShapes();
         else renderInventory();
-
-        // Switch turn after placing
-        switchTurn();
       });
     }, 150);
   }
@@ -717,9 +793,8 @@ function cleanupDrag() {
     if (dragging.el) {
       dragging.el.classList.remove('shape-ghost');
       dragging.el.classList.add('snap-back');
-      setTimeout(() => {
-        if (dragging && dragging.el) dragging.el.classList.remove('snap-back');
-      }, 400);
+      const el = dragging.el;
+      setTimeout(() => el.classList.remove('snap-back'), 400);
     }
     dragging = null;
   }
@@ -740,6 +815,10 @@ function removeDragListeners() {
 
 window.addEventListener('blur', cleanupDrag);
 document.addEventListener('visibilitychange', () => { if (document.hidden) cleanupDrag(); });
+
+// Prevent mobile zoom & scroll in game
+document.addEventListener('gesturestart', e => e.preventDefault(), { passive: false });
+document.addEventListener('gesturechange', e => e.preventDefault(), { passive: false });
 
 // ═══════════════════════════════════════
 //  HIT DETECTION
@@ -780,34 +859,6 @@ function clearHighlights() {
   document.querySelectorAll('.cell.highlight, .cell.highlight-bad').forEach(c => {
     c.classList.remove('highlight', 'highlight-bad');
   });
-}
-
-// ═══════════════════════════════════════
-//  SERVER SYNC
-// ═══════════════════════════════════════
-
-async function sendMoveToServer(indices, color) {
-  if (!gameRef) return;
-
-  // Build the board state to send
-  const boardToSend = localGrid.map(cell => {
-    if (!cell) return null;
-    return { bg: cell.bg, shine: cell.shine, shadow: cell.shadow };
-  });
-
-  const updates = {
-    board: boardToSend,
-    [`players/${myRole}/score`]: myScore,
-    [`players/${myRole}/coins`]: myCoins,
-    lastMove: {
-      by: myRole,
-      indices: indices,
-      color: { bg: color.bg, shine: color.shine, shadow: color.shadow },
-      timestamp: Date.now()
-    }
-  };
-
-  await update(gameRef, updates);
 }
 
 // ═══════════════════════════════════════
@@ -853,13 +904,11 @@ function checkLines(callback) {
   const pts = cleared * 100 * combo;
   myScore += pts;
 
-  // Score pop
   const bx = document.getElementById('board-wrapper');
   const cx = bx.getBoundingClientRect().left + bx.offsetWidth / 2;
   const cy = bx.getBoundingClientRect().top + bx.offsetHeight / 2;
   showScorePop(cx, cy - 30, '+' + pts);
 
-  // Combo banner
   if (combo >= 2) {
     const banner = document.getElementById('combo-banner');
     banner.textContent = combo + 'x COMBO! 🔥';
@@ -868,7 +917,6 @@ function checkLines(callback) {
     sound.play('combo');
   }
 
-  // Sparkles
   toKill.forEach(i => {
     const cell = document.querySelector(`.cell[data-i="${i}"]`);
     if (cell) {
@@ -879,12 +927,10 @@ function checkLines(callback) {
   });
 
   sound.play('pop');
-
-  // Shake
   document.getElementById('board-wrapper').classList.add('shake');
   setTimeout(() => document.getElementById('board-wrapper').classList.remove('shake'), 400);
 
-  // After animation
+  // After animation: clear grid and call back
   setTimeout(() => {
     toKill.forEach(i => {
       localGrid[i] = null;
@@ -905,13 +951,9 @@ function checkLines(callback) {
 // ═══════════════════════════════════════
 
 function selectShape(slotIdx) {
-  if (!myShapes[slotIdx] || !isMyTurn) return;
+  if (!myShapes[slotIdx] || !isMyTurn || !gameActive) return;
 
-  if (selectedSlot === slotIdx) {
-    selectedSlot = null;
-  } else {
-    selectedSlot = slotIdx;
-  }
+  selectedSlot = (selectedSlot === slotIdx) ? null : slotIdx;
 
   document.querySelectorAll('.shape-slot').forEach((slot, i) => {
     slot.classList.toggle('selected', i === selectedSlot && myShapes[i]);
@@ -930,6 +972,8 @@ function updatePowerupButtons() {
   const hamBtn = document.getElementById('btn-hammer');
   const refBtn = document.getElementById('btn-refresh');
 
+  if (!rotBtn || !hamBtn || !refBtn) return;
+
   if (!isMyTurn || !gameActive) {
     rotBtn.classList.add('disabled');
     hamBtn.classList.add('disabled');
@@ -943,7 +987,6 @@ function updatePowerupButtons() {
 
   hamBtn.classList.toggle('active', hammerMode);
 
-  // Update hammer uses display
   const usesEl = document.getElementById('hammer-uses');
   if (usesEl) usesEl.textContent = `${3 - hammerUsesThisTurn}/3`;
 }
@@ -982,9 +1025,7 @@ export function usePowerRotate() {
   void btn.offsetWidth;
   btn.classList.add('used');
 
-  // Update coins on server
   update(gameRef, { [`players/${myRole}/coins`]: myCoins });
-
   renderInventory();
 }
 
@@ -1005,7 +1046,8 @@ export function usePowerHammer() {
 
 function cancelHammer() {
   hammerMode = false;
-  document.getElementById('board-wrapper').classList.remove('hammer-mode');
+  const bw = document.getElementById('board-wrapper');
+  if (bw) bw.classList.remove('hammer-mode');
   updatePowerupButtons();
 }
 
@@ -1028,9 +1070,7 @@ export function usePowerRefresh() {
   void btn.offsetWidth;
   btn.classList.add('used');
 
-  // Update coins on server
   update(gameRef, { [`players/${myRole}/coins`]: myCoins });
-
   refillShapes();
 
   setTimeout(() => {
@@ -1047,9 +1087,8 @@ export function usePowerRefresh() {
 
 function setupBoardInteraction() {
   const board = document.getElementById('board');
-  // Remove old listeners first
   board.removeEventListener('pointerdown', handleBoardClick);
-  board.addEventListener('pointerdown', handleBoardClick);
+  board.addEventListener('pointerdown', handleBoardClick, { passive: false });
 }
 
 function handleBoardClick(e) {
@@ -1068,7 +1107,6 @@ function handleBoardClick(e) {
     return;
   }
 
-  // Destroy this block
   const color = localGrid[i];
   localGrid[i] = null;
   cell.classList.add('hammer-smash');
@@ -1084,10 +1122,9 @@ function handleBoardClick(e) {
   myCoins -= 30;
   hammerUsesThisTurn++;
   document.getElementById('game-coins-val').textContent = myCoins;
-
   sound.play('hammer');
 
-  // Update server
+  // Update server (board + coins + hammer uses) — NOT switching turn
   const boardToSend = localGrid.map(c => {
     if (!c) return null;
     return { bg: c.bg, shine: c.shine, shadow: c.shadow };
@@ -1099,11 +1136,7 @@ function handleBoardClick(e) {
     [`players/${myRole}/hammerUsesThisTurn`]: hammerUsesThisTurn
   });
 
-  // Stay in hammer mode if uses remain, otherwise exit
-  if (hammerUsesThisTurn >= 3) {
-    cancelHammer();
-  }
-
+  if (hammerUsesThisTurn >= 3) cancelHammer();
   updatePowerupButtons();
 }
 
@@ -1150,10 +1183,7 @@ function handleResize() {
 }
 
 window.addEventListener('resize', () => {
-  if (dragging) {
-    pendingResize = true;
-    return;
-  }
+  if (dragging) { pendingResize = true; return; }
   if (gameActive) handleResize();
 });
 
@@ -1172,4 +1202,7 @@ export function cleanupGame() {
   sound.stopBGM();
   gameId = null;
   gameRef = null;
+  prevTurnValue = null;
+  isFirstLoad = true;
+  lastProcessedMoveTimestamp = 0;
 }

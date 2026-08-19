@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════
-//  Main Application Controller (app.js)
+//  Main Application Controller — All fixes applied
 // ═══════════════════════════════════════
 import {
   initAuth,
@@ -23,8 +23,12 @@ import {
   stopListeningForInvites,
   startListeningOnlinePlayers,
   stopListeningOnlinePlayers,
+  startListeningFriendRequests,
+  stopListeningFriendRequests,
   searchPlayer,
-  addFriend,
+  sendFriendRequest,
+  acceptFriendRequestAction,
+  declineFriendRequestAction,
   startInviteTimer,
   setMatchmakingCallbacks,
   showToast
@@ -38,7 +42,7 @@ import {
   setGameCallbacks
 } from './game.js';
 
-// Screen Management
+// ═══════ Screen Management ═══════
 const SCREENS = {
   auth: document.getElementById('screen-auth'),
   username: document.getElementById('screen-username'),
@@ -46,19 +50,20 @@ const SCREENS = {
   matchmaking: document.getElementById('screen-matchmaking'),
   vs: document.getElementById('screen-vs'),
   profile: document.getElementById('screen-profile'),
-  game: document.getElementById('screen-game')
+  game: document.getElementById('screen-game'),
+  friendRequests: document.getElementById('screen-friend-requests')
 };
 
 let currentScreen = 'auth';
 let activeVsTab = 'online';
 let onlinePlayersCache = [];
 let friendsCache = [];
+let friendRequestsCache = [];
+let searchResultPlayer = null; // Store found player for friend request
 
 function switchScreen(screenName) {
   Object.keys(SCREENS).forEach(name => {
-    if (SCREENS[name]) {
-      SCREENS[name].classList.remove('active');
-    }
+    if (SCREENS[name]) SCREENS[name].classList.remove('active');
   });
   if (SCREENS[screenName]) {
     SCREENS[screenName].classList.add('active');
@@ -66,30 +71,31 @@ function switchScreen(screenName) {
   }
 }
 
-// ═══════════════════════════════════════
-//  Auth Callbacks & Navigation
-// ═══════════════════════════════════════
+// ═══════ Init ═══════
 sound.preload();
 
 initAuth((state, data) => {
   if (state === 'menu') {
     updateMenuUserInfo();
+    updateBGMButton();
     startListeningForInvites();
     startListeningOnlinePlayers();
+    startListeningFriendRequests();
     switchScreen('menu');
   } else if (state === 'username') {
     switchScreen('username');
   } else if (state === 'auth') {
     stopListeningForInvites();
     stopListeningOnlinePlayers();
+    stopListeningFriendRequests();
     switchScreen('auth');
   } else if (state === 'expired') {
-    showToast('Guest account has expired (30 days limit). Please sign in with Google.', 'error');
+    showToast('Guest account expired (30 days). Sign in with Google.', 'error');
     switchScreen('auth');
   }
 });
 
-// Setup Matchmaking & Game Callbacks
+// ═══════ Matchmaking & Game Callbacks ═══════
 setMatchmakingCallbacks({
   onMatch: (gameId) => {
     sound.play('matchFound');
@@ -103,17 +109,23 @@ setMatchmakingCallbacks({
     document.getElementById('invite-overlay').classList.add('active');
     startInviteTimer(invite.expiresAt);
   },
+  onInviteCancel: () => {
+    // Sender cancelled — hide the invite overlay
+    document.getElementById('invite-overlay').classList.remove('active');
+    showToast('Challenge was cancelled', '');
+  },
   onOnlinePlayers: (players) => {
     onlinePlayersCache = players;
-    if (currentScreen === 'vs' && activeVsTab === 'online') {
-      renderVsList();
-    }
+    if (currentScreen === 'vs' && activeVsTab === 'online') renderVsList();
   },
   onFriends: (friends) => {
     friendsCache = friends;
-    if (currentScreen === 'vs' && activeVsTab === 'friends') {
-      renderVsList();
-    }
+    if (currentScreen === 'vs' && activeVsTab === 'friends') renderVsList();
+  },
+  onFriendRequests: (requests) => {
+    friendRequestsCache = requests;
+    updateFriendRequestBadge();
+    if (currentScreen === 'friendRequests') renderFriendRequests();
   }
 });
 
@@ -121,6 +133,7 @@ setGameCallbacks({
   onEnd: (data) => {
     const overlay = document.getElementById('result-overlay');
     const title = document.getElementById('result-title');
+
     title.textContent = data.result === 'win' ? '🏆 YOU WIN!' : (data.result === 'lose' ? '💀 YOU LOSE' : '🤝 DRAW!');
     title.className = `result-title ${data.result}`;
 
@@ -134,9 +147,10 @@ setGameCallbacks({
 });
 
 // ═══════════════════════════════════════
-//  Window-Exposed Handlers for UI Buttons
+//  Window-Exposed Handlers
 // ═══════════════════════════════════════
 
+// ── Auth ──
 window.handleGoogleLogin = async () => {
   sound.play('click');
   try {
@@ -144,7 +158,13 @@ window.handleGoogleLogin = async () => {
     await loginWithGoogle();
   } catch (err) {
     document.getElementById('auth-status').textContent = '';
-    showToast(err.message || 'Google sign-in failed', 'error');
+    console.error('Google login error:', err);
+
+    if (err.code === 'auth/unauthorized-domain') {
+      showToast('Add this domain to Firebase Console → Auth → Authorized Domains', 'error');
+    } else {
+      showToast(err.message || 'Google sign-in failed', 'error');
+    }
   }
 };
 
@@ -171,8 +191,10 @@ window.handleSetUsername = async () => {
   try {
     await setUsername(val);
     updateMenuUserInfo();
+    updateBGMButton();
     startListeningForInvites();
     startListeningOnlinePlayers();
+    startListeningFriendRequests();
     switchScreen('menu');
   } catch (err) {
     input.classList.add('error');
@@ -187,6 +209,7 @@ window.handleLogout = async () => {
   await logout();
 };
 
+// ── Navigation ──
 window.showMenu = () => {
   sound.play('click');
   switchScreen('menu');
@@ -221,13 +244,24 @@ window.showProfile = () => {
   switchScreen('profile');
 };
 
-window.toggleMenuMute = () => {
-  const muted = sound.toggleMute();
-  const btn = document.getElementById('menu-mute-btn');
-  if (btn) btn.textContent = muted ? '🔇' : '🔊';
+window.showFriendRequests = () => {
+  sound.play('click');
+  switchScreen('friendRequests');
+  renderFriendRequests();
 };
 
-// VS Mode Functions
+// ── BGM toggle (only background music) ──
+function updateBGMButton() {
+  const btn = document.getElementById('menu-mute-btn');
+  if (btn) btn.textContent = sound.isBGMEnabled() ? '🔊' : '🔇';
+}
+
+window.toggleMenuMute = () => {
+  sound.toggleBGM();
+  updateBGMButton();
+};
+
+// ═══════ VS Mode ═══════
 window.switchVsTab = (tab) => {
   sound.play('click');
   activeVsTab = tab;
@@ -242,7 +276,11 @@ function renderVsList() {
 
   list.innerHTML = '';
   if (!players || players.length === 0) {
-    list.innerHTML = `<div class="vs-empty">${activeVsTab === 'online' ? 'No other players online right now' : 'No friends added yet. Search by Player ID above!'}</div>`;
+    list.innerHTML = `<div class="vs-empty">${
+      activeVsTab === 'online'
+        ? 'No other players online right now'
+        : 'No friends added yet. Search by Player ID above!'
+    }</div>`;
     return;
   }
 
@@ -289,6 +327,7 @@ window.declineInvite = async () => {
   await declineInviteAction();
 };
 
+// ═══════ Player Search → Show popup → Send friend request ═══════
 window.searchPlayerById = async () => {
   sound.play('click');
   const input = document.getElementById('vs-search-input');
@@ -308,24 +347,98 @@ window.searchPlayerById = async () => {
       return;
     }
 
-    await addFriend(found.uid);
-    showToast(`Added ${found.username} to your friends!`, 'success');
+    // Show search result popup
+    searchResultPlayer = found;
+    document.getElementById('search-result-name').textContent = found.username;
+    document.getElementById('search-result-id').textContent = 'ID: ' + found.playerId;
+    document.getElementById('search-result-overlay').classList.add('active');
     input.value = '';
-    window.switchVsTab('friends');
+
   } catch (err) {
     showToast('Search failed', 'error');
   }
 };
 
+window.sendFriendReq = async () => {
+  sound.play('click');
+  if (!searchResultPlayer) return;
+
+  try {
+    await sendFriendRequest(searchResultPlayer.uid);
+    document.getElementById('search-result-overlay').classList.remove('active');
+    searchResultPlayer = null;
+  } catch (err) {
+    showToast('Failed to send request', 'error');
+  }
+};
+
+window.closeSearchResult = () => {
+  sound.play('click');
+  document.getElementById('search-result-overlay').classList.remove('active');
+  searchResultPlayer = null;
+};
+
+// ═══════ Friend Requests ═══════
+function updateFriendRequestBadge() {
+  const badge = document.getElementById('fr-badge');
+  if (!badge) return;
+  const count = friendRequestsCache.length;
+  badge.textContent = count;
+  badge.classList.toggle('hidden', count === 0);
+}
+
+function renderFriendRequests() {
+  const list = document.getElementById('friend-requests-list');
+  list.innerHTML = '';
+
+  if (friendRequestsCache.length === 0) {
+    list.innerHTML = '<div class="vs-empty">No pending friend requests</div>';
+    return;
+  }
+
+  friendRequestsCache.forEach(req => {
+    const card = document.createElement('div');
+    card.className = 'vs-player-card';
+    card.style.cursor = 'default';
+    card.innerHTML = `
+      <div class="vs-player-avatar">👤</div>
+      <div class="vs-player-info">
+        <div class="vs-player-name">${req.fromUsername}</div>
+        <div class="vs-player-id">ID: ${req.fromPlayerId}</div>
+      </div>
+      <div class="fr-actions">
+        <button class="fr-accept-btn" data-id="${req.id}">✅</button>
+        <button class="fr-decline-btn" data-id="${req.id}">✖</button>
+      </div>
+    `;
+
+    // Accept button
+    card.querySelector('.fr-accept-btn').onclick = async (e) => {
+      e.stopPropagation();
+      sound.play('click');
+      await acceptFriendRequestAction(req.id);
+    };
+
+    // Decline button
+    card.querySelector('.fr-decline-btn').onclick = async (e) => {
+      e.stopPropagation();
+      sound.play('click');
+      await declineFriendRequestAction(req.id);
+    };
+
+    list.appendChild(card);
+  });
+}
+
+// ═══════ Game Result ═══════
 window.returnToMenu = () => {
   sound.play('click');
-  const overlay = document.getElementById('result-overlay');
-  overlay.classList.remove('active');
+  document.getElementById('result-overlay').classList.remove('active');
   cleanupGame();
   switchScreen('menu');
 };
 
-// Powerups exported
+// ═══════ Powerups (expose to window) ═══════
 window.usePowerRotate = usePowerRotate;
 window.usePowerHammer = usePowerHammer;
 window.usePowerRefresh = usePowerRefresh;

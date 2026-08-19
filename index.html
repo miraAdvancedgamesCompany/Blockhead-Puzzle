@@ -3,10 +3,15 @@
 
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <title>Block Puzzle Online</title>
   <meta name="description" content="Play Block Puzzle online against other players! Competitive multiplayer block puzzle game.">
   <link rel="stylesheet" href="style.css">
+  <!-- Prevent iOS zoom on double tap & pinch -->
+  <style>
+    * { -webkit-touch-callout: none; }
+    html { touch-action: manipulation; }
+  </style>
 </head>
 
 <body>
@@ -92,8 +97,15 @@
         </button>
       </div>
 
+      <!-- Friend Requests Button -->
+      <button class="menu-btn" style="background: var(--ink); border-color: var(--yellow); font-size: 16px; padding: 10px;" onclick="showFriendRequests()">
+        <span class="btn-icon">📬</span>
+        FRIEND REQUESTS
+        <span class="fr-badge hidden" id="fr-badge">0</span>
+      </button>
+
       <div class="menu-footer">
-        <button class="menu-footer-btn" id="menu-mute-btn" onclick="toggleMenuMute()">🔊</button>
+        <button class="menu-footer-btn" id="menu-mute-btn" onclick="toggleMenuMute()" title="Toggle Background Music">🔇</button>
         <button class="menu-footer-btn" id="menu-logout-btn" onclick="handleLogout()">🚪</button>
       </div>
     </div>
@@ -123,7 +135,7 @@
       <div class="vs-search">
         <input type="text" class="vs-search-input" id="vs-search-input"
           placeholder="Search by Player ID (e.g. B2704817)" maxlength="8" autocomplete="off">
-        <button class="vs-search-btn" onclick="searchPlayerById()">ADD</button>
+        <button class="vs-search-btn" onclick="searchPlayerById()">🔍</button>
       </div>
 
       <div class="vs-tabs">
@@ -134,8 +146,6 @@
       <div class="vs-list" id="vs-player-list">
         <div class="vs-empty">Looking for players...</div>
       </div>
-
-      <div id="vs-search-result" class="hidden"></div>
     </div>
   </div>
 
@@ -185,6 +195,22 @@
   </div>
 
   <!-- ═══════════════════════════════════════
+       SCREEN: FRIEND REQUESTS
+  ═══════════════════════════════════════ -->
+  <div id="screen-friend-requests" class="screen">
+    <div class="vs-container">
+      <div class="vs-header">
+        <button class="back-btn" onclick="showMenu()">◀</button>
+        <div class="vs-title">📬 FRIEND REQUESTS</div>
+      </div>
+
+      <div class="vs-list" id="friend-requests-list">
+        <div class="vs-empty">No pending friend requests</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════
        SCREEN: GAME (Multiplayer)
   ═══════════════════════════════════════ -->
   <div id="screen-game" class="screen">
@@ -225,7 +251,7 @@
       <!-- Inventory -->
       <div id="inventory"></div>
 
-      <!-- Coins display + Power-ups -->
+      <!-- Coins display -->
       <div style="display: flex; align-items: center; gap: 10px; width: calc(100% - 24px); max-width: 480px; justify-content: center; margin-top: 4px;">
         <div class="game-coins" id="game-coins">
           <span class="game-coins-icon">🪙</span>
@@ -233,6 +259,7 @@
         </div>
       </div>
 
+      <!-- Power-ups -->
       <div id="powerups">
         <button class="powerup-btn disabled" id="btn-rotate" onclick="usePowerRotate()">
           <span class="pu-icon">🔄</span>
@@ -277,7 +304,7 @@
   </div>
 
   <!-- ═══════════════════════════════════════
-       INVITATION OVERLAY (incoming invite)
+       INVITATION OVERLAY (incoming game invite)
   ═══════════════════════════════════════ -->
   <div class="invite-overlay" id="invite-overlay">
     <div class="invite-card">
@@ -306,6 +333,21 @@
         <div class="invite-timer-fill" id="sent-invite-timer-fill"></div>
       </div>
       <button class="cancel-btn" onclick="cancelSentInvite()" style="width: 100%;">✖ CANCEL</button>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════
+       SEARCH RESULT POPUP
+  ═══════════════════════════════════════ -->
+  <div class="invite-overlay" id="search-result-overlay">
+    <div class="invite-card">
+      <div class="invite-icon">👤</div>
+      <div class="invite-title" id="search-result-name">Player</div>
+      <div class="invite-from" id="search-result-id">ID: --------</div>
+      <div class="invite-actions">
+        <button class="invite-accept" id="search-add-btn" onclick="sendFriendReq()">➕ ADD FRIEND</button>
+        <button class="invite-decline" onclick="closeSearchResult()">✖ CLOSE</button>
+      </div>
     </div>
   </div>
 

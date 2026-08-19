@@ -1,12 +1,12 @@
 // ═══════════════════════════════════════
-//  Sound Manager
+//  Sound Manager — BGM-only mute, SFX always on
 // ═══════════════════════════════════════
 export class SoundManager {
   constructor() {
     this.sounds = {};
     this.bgm = null;
-    this.muted = localStorage.getItem('blockhead_muted') === 'true';
-    this.bgmPendingStart = false;
+    // BGM starts OFF by default
+    this.bgmEnabled = false;
   }
 
   preload() {
@@ -22,7 +22,6 @@ export class SoundManager {
       hammer: 'sfx_hammer.mp3',
       gameover: 'sfx_gameover.mp3',
       click: 'sfx_click.mp3',
-      // Multiplayer sounds — reuse existing files with pitch/volume variations
       turn: 'sfx_click.mp3',
       invite: 'sfx_powerup.mp3',
       timerWarn: 'sfx_snap.mp3',
@@ -52,8 +51,9 @@ export class SoundManager {
     }
   }
 
+  // SFX always plays regardless of bgmEnabled
   play(name) {
-    if (this.muted || !this.sounds[name]) return;
+    if (!this.sounds[name]) return;
     try {
       const clone = this.sounds[name].cloneNode();
       clone.volume = this.sounds[name].volume || 0.5;
@@ -62,18 +62,16 @@ export class SoundManager {
   }
 
   startBGM() {
-    if (this.muted || !this.bgm) return;
-    const p = this.bgm.play();
-    if (p) p.catch(() => { this.bgmPendingStart = true; });
+    if (!this.bgmEnabled || !this.bgm) return;
+    this.bgm.play().catch(() => {});
   }
 
   stopBGM() {
     if (this.bgm) { this.bgm.pause(); this.bgm.currentTime = 0; }
-    this.bgmPendingStart = false;
   }
 
   resumeBGM() {
-    if (this.muted || !this.bgm) return;
+    if (!this.bgmEnabled || !this.bgm) return;
     this.bgm.play().catch(() => {});
   }
 
@@ -81,22 +79,19 @@ export class SoundManager {
     if (this.bgm) this.bgm.pause();
   }
 
-  tryPendingBGM() {
-    if (this.bgmPendingStart && !this.muted && this.bgm) {
-      this.bgm.play().catch(() => {});
-      this.bgmPendingStart = false;
+  // Toggle BGM only — returns true if BGM is now ON
+  toggleBGM() {
+    this.bgmEnabled = !this.bgmEnabled;
+    if (this.bgmEnabled) {
+      this.startBGM();
+    } else {
+      if (this.bgm) this.bgm.pause();
     }
+    return this.bgmEnabled;
   }
 
-  toggleMute() {
-    this.muted = !this.muted;
-    localStorage.setItem('blockhead_muted', this.muted);
-    if (this.muted) {
-      if (this.bgm) this.bgm.pause();
-    } else {
-      this.startBGM();
-    }
-    return this.muted;
+  isBGMEnabled() {
+    return this.bgmEnabled;
   }
 }
 

@@ -1,36 +1,48 @@
 // ═══════════════════════════════════════
-//  Matchmaking & Invitation System
+//  Matchmaking, Invitations & Friend Requests
 // ═══════════════════════════════════════
 import {
   db, auth,
   ref, set, get, update, remove, push,
   onValue, onChildAdded, onChildRemoved, off,
-  onDisconnect, serverTimestamp, runTransaction,
-  query, orderByChild, equalTo
+  onDisconnect
 } from './firebase-config.js';
 import { getCurrentUser, getCurrentUserData, getUserData, getUserByPlayerId } from './auth.js';
 
+// ── Module state ──
 let queueListener = null;
 let inviteListener = null;
+let inviteRemovedListener = null;
 let sentInviteListener = null;
 let onlinePlayersListener = null;
-let friendsCache = {};
+let friendRequestsListener = null;
+
+// Current incoming invite
 let currentInviteId = null;
-let currentSentInviteTarget = null;
 let inviteTimerInterval = null;
+
+// Current SENT invite (separate from received)
+let currentSentInviteId = null;
+let currentSentInviteTarget = null;
 let sentInviteTimerInterval = null;
 
 // Callbacks — set by app.js
 let onMatchFound = null;
 let onInviteReceived = null;
+let onInviteCancelled = null;
 let onOnlinePlayersUpdate = null;
 let onFriendsUpdate = null;
+let onFriendRequestsUpdate = null;
 
-export function setMatchmakingCallbacks({ onMatch, onInvite, onOnlinePlayers, onFriends }) {
+export function setMatchmakingCallbacks({
+  onMatch, onInvite, onInviteCancel, onOnlinePlayers, onFriends, onFriendRequests
+}) {
   onMatchFound = onMatch;
   onInviteReceived = onInvite;
+  onInviteCancelled = onInviteCancel;
   onOnlinePlayersUpdate = onOnlinePlayers;
   onFriendsUpdate = onFriends;
+  onFriendRequestsUpdate = onFriendRequests;
 }
 
 // ═══════════════════════════════════════
@@ -43,8 +55,6 @@ export async function joinMatchmakingQueue() {
   if (!user || !userData) return;
 
   const queueRef = ref(db, 'matchmaking/queue');
-
-  // First check if there's already someone waiting
   const snap = await get(queueRef);
 
   if (snap.exists()) {
@@ -52,14 +62,11 @@ export async function joinMatchmakingQueue() {
     const waiterUids = Object.keys(waiters).filter(uid => uid !== user.uid);
 
     if (waiterUids.length > 0) {
-      // Found an opponent! Create a game
       const opponentUid = waiterUids[0];
       const opponentData = waiters[opponentUid];
 
-      // Remove opponent from queue
       await remove(ref(db, `matchmaking/queue/${opponentUid}`));
 
-      // Create game room
       const gameId = await createGameRoom(
         user.uid, userData.username,
         opponentUid, opponentData.username
@@ -70,7 +77,7 @@ export async function joinMatchmakingQueue() {
     }
   }
 
-  // No one waiting — add ourselves to the queue
+  // No one waiting — add to queue
   const myQueueRef = ref(db, `matchmaking/queue/${user.uid}`);
   await set(myQueueRef, {
     username: userData.username,
@@ -78,22 +85,16 @@ export async function joinMatchmakingQueue() {
     joinedAt: Date.now()
   });
 
-  // Auto-remove on disconnect
   onDisconnect(myQueueRef).remove();
-
-  // Listen for someone to pick us up (our queue entry being removed means we got matched)
-  // Also listen for a game being created for us
   listenForMatch(user.uid);
 }
 
 function listenForMatch(uid) {
-  // Listen for games where we're a player
-  const gamesRef = ref(db, 'matchmaking/matches/' + uid);
+  const matchRef = ref(db, 'matchmaking/matches/' + uid);
 
-  queueListener = onValue(gamesRef, async (snap) => {
+  queueListener = onValue(matchRef, async (snap) => {
     if (snap.exists()) {
       const gameId = snap.val();
-      // Clean up
       await remove(ref(db, `matchmaking/matches/${uid}`));
       await remove(ref(db, `matchmaking/queue/${uid}`));
 
@@ -106,10 +107,8 @@ export async function leaveMatchmakingQueue() {
   const user = getCurrentUser();
   if (!user) return;
 
-  // Remove from queue
   await remove(ref(db, `matchmaking/queue/${user.uid}`));
 
-  // Stop listening
   if (queueListener) {
     off(ref(db, `matchmaking/matches/${user.uid}`));
     queueListener = null;
@@ -129,12 +128,12 @@ async function createGameRoom(uid1, username1, uid2, username2) {
     status: 'playing',
     createdAt: now,
     gameStartedAt: now,
-    gameEndsAt: now + 90000, // 90 seconds
+    gameEndsAt: now + 90000,
     gameDuration: 90,
     turnDuration: 10,
     currentTurn: 'player1',
     turnStartedAt: now,
-    board: new Array(64).fill(null), // 8x8
+    board: new Array(64).fill(null),
     players: {
       player1: {
         uid: uid1,
@@ -155,15 +154,13 @@ async function createGameRoom(uid1, username1, uid2, username2) {
   };
 
   await set(gameRef, gameData);
-
-  // Notify player2 about the game
   await set(ref(db, `matchmaking/matches/${uid2}`), gameId);
 
   return gameId;
 }
 
 // ═══════════════════════════════════════
-//  INVITATION SYSTEM (VS mode)
+//  INVITATION SYSTEM (VS mode — game invite)
 // ═══════════════════════════════════════
 
 export async function sendInvite(targetUid) {
@@ -173,6 +170,7 @@ export async function sendInvite(targetUid) {
 
   const now = Date.now();
   const inviteRef = push(ref(db, `invitations/${targetUid}`));
+  const inviteId = inviteRef.key;
 
   const inviteData = {
     from: user.uid,
@@ -180,18 +178,19 @@ export async function sendInvite(targetUid) {
     fromPlayerId: userData.playerId,
     status: 'pending',
     createdAt: now,
-    expiresAt: now + 15000 // 15 seconds
+    expiresAt: now + 15000
   };
 
   await set(inviteRef, inviteData);
 
+  // Store SENT invite info for cancel
+  currentSentInviteId = inviteId;
   currentSentInviteTarget = targetUid;
-  const inviteId = inviteRef.key;
 
   // Listen for response
   listenForInviteResponse(targetUid, inviteId);
 
-  // Auto-expire after 15s
+  // Auto-expire timer
   startSentInviteTimer(targetUid, inviteId);
 
   return inviteId;
@@ -202,7 +201,7 @@ function listenForInviteResponse(targetUid, inviteId) {
 
   sentInviteListener = onValue(inviteRef, async (snap) => {
     if (!snap.exists()) {
-      // Invite was removed (expired or cancelled)
+      // Invite removed (expired/cancelled)
       cleanupSentInvite();
       return;
     }
@@ -210,7 +209,6 @@ function listenForInviteResponse(targetUid, inviteId) {
     const data = snap.val();
 
     if (data.status === 'accepted') {
-      // Opponent accepted! Create game
       cleanupSentInvite();
       await remove(inviteRef);
 
@@ -227,7 +225,6 @@ function listenForInviteResponse(targetUid, inviteId) {
     } else if (data.status === 'declined') {
       cleanupSentInvite();
       await remove(inviteRef);
-      // Show toast notification
       showToast('Invite was declined', 'error');
     }
   });
@@ -244,10 +241,10 @@ function startSentInviteTimer(targetUid, inviteId) {
     if (fill) fill.style.width = (remaining * 100) + '%';
 
     if (elapsed >= duration) {
-      // Expired
       clearInterval(sentInviteTimerInterval);
+      sentInviteTimerInterval = null;
       cleanupSentInvite();
-      await remove(ref(db, `invitations/${targetUid}/${inviteId}`));
+      try { await remove(ref(db, `invitations/${targetUid}/${inviteId}`)); } catch(e) {}
       showToast('Invite expired', 'error');
     }
   }, 100);
@@ -259,17 +256,22 @@ function cleanupSentInvite() {
     sentInviteTimerInterval = null;
   }
   if (sentInviteListener) {
+    // The listener auto-detaches when ref is removed, but clean up our reference
     sentInviteListener = null;
   }
+  currentSentInviteId = null;
   currentSentInviteTarget = null;
 
   const overlay = document.getElementById('sent-invite-overlay');
   if (overlay) overlay.classList.remove('active');
 }
 
+// ── Cancel a SENT invite (properly removes from Firebase) ──
 export function cancelSentInviteAction() {
-  if (currentSentInviteTarget && currentInviteId) {
-    remove(ref(db, `invitations/${currentSentInviteTarget}/${currentInviteId}`));
+  if (currentSentInviteTarget && currentSentInviteId) {
+    // Remove the invite from Firebase — this triggers removal on receiver's end too
+    remove(ref(db, `invitations/${currentSentInviteTarget}/${currentSentInviteId}`))
+      .catch(e => console.error('Failed to cancel invite:', e));
   }
   cleanupSentInvite();
 }
@@ -284,6 +286,7 @@ export function startListeningForInvites() {
 
   const invitesRef = ref(db, `invitations/${user.uid}`);
 
+  // Listen for new invites
   inviteListener = onChildAdded(invitesRef, (snap) => {
     const invite = snap.val();
     const inviteId = snap.key;
@@ -307,15 +310,27 @@ export function startListeningForInvites() {
       });
     }
   });
+
+  // Listen for invites being REMOVED (sender cancelled)
+  inviteRemovedListener = onChildRemoved(invitesRef, (snap) => {
+    const removedId = snap.key;
+    if (removedId === currentInviteId) {
+      // The invite we're looking at was cancelled by sender
+      currentInviteId = null;
+      clearInviteTimer();
+      if (onInviteCancelled) onInviteCancelled();
+    }
+  });
 }
 
 export function stopListeningForInvites() {
   const user = getCurrentUser();
   if (!user) return;
 
-  if (inviteListener) {
+  if (inviteListener || inviteRemovedListener) {
     off(ref(db, `invitations/${user.uid}`));
     inviteListener = null;
+    inviteRemovedListener = null;
   }
 }
 
@@ -327,9 +342,8 @@ export async function acceptInviteAction() {
     status: 'accepted'
   });
 
-  // Wait for the game to be created by the inviter — listen for match
+  // Listen for game creation
   listenForMatch(user.uid);
-
   hideInviteOverlay();
 }
 
@@ -361,7 +375,6 @@ function clearInviteTimer() {
 export function startInviteTimer(expiresAt) {
   clearInviteTimer();
   const fill = document.getElementById('invite-timer-fill');
-
   const duration = expiresAt - Date.now();
   const startTime = Date.now();
 
@@ -372,10 +385,124 @@ export function startInviteTimer(expiresAt) {
 
     if (elapsed >= duration) {
       clearInterval(inviteTimerInterval);
-      // Auto-decline
+      inviteTimerInterval = null;
       declineInviteAction();
     }
   }, 100);
+}
+
+// ═══════════════════════════════════════
+//  FRIEND REQUEST SYSTEM (persistent, no timer)
+// ═══════════════════════════════════════
+
+export async function sendFriendRequest(targetUid) {
+  const user = getCurrentUser();
+  const userData = getCurrentUserData();
+  if (!user || !userData) return;
+
+  // Check if already friends
+  const myFriends = userData.friends || {};
+  if (myFriends[targetUid]) {
+    showToast('Already friends!', 'error');
+    return;
+  }
+
+  // Check for existing request
+  const existingSnap = await get(ref(db, `friendRequests/${targetUid}`));
+  if (existingSnap.exists()) {
+    const reqs = existingSnap.val();
+    for (const [id, req] of Object.entries(reqs)) {
+      if (req.from === user.uid && req.status === 'pending') {
+        showToast('Friend request already sent!', 'error');
+        return;
+      }
+    }
+  }
+
+  // Also check if they sent US a request (auto-accept)
+  const reverseSnap = await get(ref(db, `friendRequests/${user.uid}`));
+  if (reverseSnap.exists()) {
+    const reqs = reverseSnap.val();
+    for (const [id, req] of Object.entries(reqs)) {
+      if (req.from === targetUid && req.status === 'pending') {
+        // They already sent us a request — auto-accept both ways
+        await acceptFriendRequestAction(id);
+        showToast('You are now friends!', 'success');
+        return;
+      }
+    }
+  }
+
+  const reqRef = push(ref(db, `friendRequests/${targetUid}`));
+  await set(reqRef, {
+    from: user.uid,
+    fromUsername: userData.username,
+    fromPlayerId: userData.playerId,
+    status: 'pending',
+    createdAt: Date.now()
+  });
+
+  showToast('Friend request sent!', 'success');
+}
+
+export async function acceptFriendRequestAction(requestId) {
+  const user = getCurrentUser();
+  if (!user) return;
+
+  const reqRef = ref(db, `friendRequests/${user.uid}/${requestId}`);
+  const snap = await get(reqRef);
+  if (!snap.exists()) return;
+
+  const req = snap.val();
+
+  // Add both as friends
+  const updates = {};
+  updates[`users/${user.uid}/friends/${req.from}`] = true;
+  updates[`users/${req.from}/friends/${user.uid}`] = true;
+
+  await update(ref(db), updates);
+
+  // Remove the request
+  await remove(reqRef);
+
+  showToast(`You and ${req.fromUsername} are now friends!`, 'success');
+}
+
+export async function declineFriendRequestAction(requestId) {
+  const user = getCurrentUser();
+  if (!user) return;
+
+  await remove(ref(db, `friendRequests/${user.uid}/${requestId}`));
+  showToast('Friend request declined', '');
+}
+
+// ── Listen for friend requests ──
+export function startListeningFriendRequests() {
+  const user = getCurrentUser();
+  if (!user) return;
+
+  const reqRef = ref(db, `friendRequests/${user.uid}`);
+  friendRequestsListener = onValue(reqRef, (snap) => {
+    const requests = [];
+    if (snap.exists()) {
+      const data = snap.val();
+      for (const [id, req] of Object.entries(data)) {
+        if (req.status === 'pending') {
+          requests.push({ id, ...req });
+        }
+      }
+    }
+    if (onFriendRequestsUpdate) onFriendRequestsUpdate(requests);
+  });
+}
+
+export function stopListeningFriendRequests() {
+  const user = getCurrentUser();
+  if (!user) return;
+  if (friendRequestsListener) {
+    off(ref(db, `friendRequests/${user.uid}`));
+    friendRequestsListener = null;
+  }
 }
 
 // ═══════════════════════════════════════
@@ -394,7 +521,6 @@ export function startListeningOnlinePlayers() {
     const allUsers = snap.val();
     const onlinePlayers = [];
     const friends = [];
-
     const myFriends = (getCurrentUserData() || {}).friends || {};
 
     for (const [uid, data] of Object.entries(allUsers)) {
@@ -431,30 +557,8 @@ export function stopListeningOnlinePlayers() {
 }
 
 // ═══════════════════════════════════════
-//  FRIEND SYSTEM
+//  PLAYER SEARCH
 // ═══════════════════════════════════════
-
-export async function addFriend(targetUid) {
-  const user = getCurrentUser();
-  if (!user || targetUid === user.uid) return;
-
-  const updates = {};
-  updates[`users/${user.uid}/friends/${targetUid}`] = true;
-  updates[`users/${targetUid}/friends/${user.uid}`] = true;
-
-  await update(ref(db), updates);
-}
-
-export async function removeFriend(targetUid) {
-  const user = getCurrentUser();
-  if (!user) return;
-
-  const updates = {};
-  updates[`users/${user.uid}/friends/${targetUid}`] = null;
-  updates[`users/${targetUid}/friends/${user.uid}`] = null;
-
-  await update(ref(db), updates);
-}
 
 export async function searchPlayer(playerId) {
   return getUserByPlayerId(playerId.toUpperCase());
