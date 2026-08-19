@@ -976,8 +976,30 @@ body::before {
   justify-content: space-between;
   width: 100%;
   padding: 2px 4px;
-  gap: 6px;
+  gap: 4px;
   flex-shrink: 0;
+}
+
+.game-leave-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: var(--ink);
+  border: 1.5px solid var(--red);
+  color: var(--cream);
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 1px 1px 0 rgba(0, 0, 0, 0.3);
+  transition: transform 0.1s, background 0.15s;
+  flex-shrink: 0;
+}
+
+.game-leave-btn:active {
+  transform: scale(0.92);
+  background: var(--red);
 }
 
 .game-timer-main {

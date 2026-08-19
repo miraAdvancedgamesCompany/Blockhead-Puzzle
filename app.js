@@ -36,6 +36,7 @@ import {
 import {
   startGame,
   cleanupGame,
+  surrenderGame,
   usePowerRotate,
   usePowerHammer,
   usePowerRefresh,
@@ -134,8 +135,18 @@ setGameCallbacks({
     const overlay = document.getElementById('result-overlay');
     const title = document.getElementById('result-title');
 
-    title.textContent = data.result === 'win' ? '🏆 YOU WIN!' : (data.result === 'lose' ? '💀 YOU LOSE' : '🤝 DRAW!');
-    title.className = `result-title ${data.result}`;
+    if (data.surrendered) {
+      if (data.result === 'lose') {
+        title.textContent = '💀 YOU FORFEITED';
+        title.className = 'result-title lose';
+      } else {
+        title.textContent = '🏆 OPPONENT FORFEITED!';
+        title.className = 'result-title win';
+      }
+    } else {
+      title.textContent = data.result === 'win' ? '🏆 YOU WIN!' : (data.result === 'lose' ? '💀 YOU LOSE' : '🤝 DRAW!');
+      title.className = `result-title ${data.result}`;
+    }
 
     document.getElementById('result-me-name').textContent = data.myName;
     document.getElementById('result-me-score').textContent = data.myScore;
@@ -430,12 +441,28 @@ function renderFriendRequests() {
   });
 }
 
-// ═══════ Game Result ═══════
+// ═══════ Game Result & Surrender ═══════
 window.returnToMenu = () => {
   sound.play('click');
   document.getElementById('result-overlay').classList.remove('active');
   cleanupGame();
   switchScreen('menu');
+};
+
+window.handleSurrender = () => {
+  sound.play('click');
+  document.getElementById('surrender-modal').classList.add('active');
+};
+
+window.closeSurrenderModal = () => {
+  sound.play('click');
+  document.getElementById('surrender-modal').classList.remove('active');
+};
+
+window.confirmSurrenderAction = async () => {
+  sound.play('click');
+  document.getElementById('surrender-modal').classList.remove('active');
+  await surrenderGame();
 };
 
 // ═══════ Powerups (expose to window) ═══════

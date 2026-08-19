@@ -7,6 +7,7 @@
   <title>Block Puzzle Online</title>
   <meta name="description" content="Play Block Puzzle online against other players! Competitive multiplayer block puzzle game.">
   <link rel="stylesheet" href="style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧩</text></svg>">
   <!-- Prevent iOS zoom on double tap & pinch -->
   <style>
     * { -webkit-touch-callout: none; }
@@ -215,8 +216,10 @@
   ═══════════════════════════════════════ -->
   <div id="screen-game" class="screen">
     <div class="game-container">
-      <!-- Game Header: Timer + Scores -->
+      <!-- Game Header: Leave btn + Scores + Timer -->
       <div class="game-header">
+        <button class="game-leave-btn" onclick="handleSurrender()" title="Leave Match">🚪</button>
+
         <div class="game-player-score is-me" id="gps-me">
           <span class="gps-avatar">🔵</span>
           <span class="gps-name" id="gps-me-name">You</span>
@@ -347,6 +350,23 @@
       <div class="invite-actions">
         <button class="invite-accept" id="search-add-btn" onclick="sendFriendReq()">➕ ADD FRIEND</button>
         <button class="invite-decline" onclick="closeSearchResult()">✖ CLOSE</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════
+       SURRENDER CONFIRMATION MODAL
+  ═══════════════════════════════════════ -->
+  <div class="invite-overlay" id="surrender-modal">
+    <div class="invite-card">
+      <div class="invite-icon">🚪</div>
+      <div class="invite-title">LEAVE MATCH?</div>
+      <div class="invite-from" style="text-align: center; font-size: 13px; color: var(--red2);">
+        Leaving now counts as an immediate defeat!
+      </div>
+      <div class="invite-actions">
+        <button class="invite-decline" onclick="confirmSurrenderAction()">🚪 FORFEIT</button>
+        <button class="invite-accept" onclick="closeSurrenderModal()">RESUME</button>
       </div>
     </div>
   </div>

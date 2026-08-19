@@ -136,6 +136,7 @@ export async function startGame(gId) {
   hammerMode = false;
   isClearing = false;
   gameActive = true;
+  isEndGameCalled = false;
   lastProcessedMoveTs = 0;
   prevTurnValue = null;
   isFirstLoad = true;
@@ -176,11 +177,16 @@ export async function startGame(gId) {
 // ═══════════════════════════════════════
 function listenForGameChanges() {
   gameListener = onValue(gameRef, (snap) => {
-    if (!snap.exists() || !gameActive) return;
+    if (!snap.exists()) return;
     const data = snap.val();
 
-    // ── Game finished ──
-    if (data.status === 'finished') { endGame(data); return; }
+    // ── Game finished (ALWAYS check before gameActive) ──
+    if (data.status === 'finished') {
+      endGame(data);
+      return;
+    }
+
+    if (!gameActive) return;
 
     // ── Scores & coins ──
     if (data.players) {
@@ -504,84 +510,113 @@ async function sendBoardUpdate() {
 // ═══════════════════════════════════════
 //  GAME END + 3-LEVEL TIEBREAKER
 // ═══════════════════════════════════════
+let isEndGameCalled = false;
+
 async function finishGame() {
-  if (!gameActive) return;
-  gameActive = false;
+  if (!gameRef) return;
 
-  const snap = await get(gameRef);
-  if (!snap.exists()) return;
-  const data = snap.val();
-  if (data.status === 'finished') return;
+  try {
+    const snap = await get(gameRef);
+    if (!snap.exists()) return;
+    const data = snap.val();
+    if (data.status === 'finished') return; // Already processed
 
-  const p1 = data.players.player1;
-  const p2 = data.players.player2;
+    const p1 = data.players?.player1;
+    const p2 = data.players?.player2;
 
-  const p1Lines = p1?.linesCleared || 0;
-  const p2Lines = p2?.linesCleared || 0;
-  const p1PU    = p1?.powerUpsUsed || 0;
-  const p2PU    = p2?.powerUpsUsed || 0;
-  const lastTurn = data.currentTurn; // who was active when time expired
+    const p1Lines = p1?.linesCleared || 0;
+    const p2Lines = p2?.linesCleared || 0;
+    const p1PU    = p1?.powerUpsUsed || 0;
+    const p2PU    = p2?.powerUpsUsed || 0;
+    const lastTurn = data.currentTurn; // who had the turn when time expired
 
-  let winner = 'draw';
+    let winner = 'draw';
 
-  // Rule 1: More lines cleared wins
-  if (p1Lines > p2Lines) {
-    winner = 'player1';
-  } else if (p2Lines > p1Lines) {
-    winner = 'player2';
-  }
-  // Rule 2: Tie → fewer power-ups used wins
-  else if (p1PU < p2PU) {
-    winner = 'player1';
-  } else if (p2PU < p1PU) {
-    winner = 'player2';
-  }
-  // Rule 3: Still tie → player who was NOT on turn wins (player on turn timed out)
-  else if (lastTurn === 'player2') {
-    winner = 'player1';
-  } else if (lastTurn === 'player1') {
-    winner = 'player2';
-  }
-
-  await update(gameRef, {
-    status: 'finished',
-    result: {
-      winner,
-      player1Score: p1?.score || 0,
-      player2Score: p2?.score || 0,
-      player1Lines: p1Lines,
-      player2Lines: p2Lines,
-      player1PU: p1PU,
-      player2PU: p2PU
+    // Rule 1: More lines cleared wins
+    if (p1Lines > p2Lines) {
+      winner = 'player1';
+    } else if (p2Lines > p1Lines) {
+      winner = 'player2';
     }
-  });
+    // Rule 2: Tie → fewer power-ups used wins
+    else if (p1PU < p2PU) {
+      winner = 'player1';
+    } else if (p2PU < p1PU) {
+      winner = 'player2';
+    }
+    // Rule 3: Still tie → player who was NOT on turn wins (player on turn timed out)
+    else if (lastTurn === 'player2') {
+      winner = 'player1';
+    } else if (lastTurn === 'player1') {
+      winner = 'player2';
+    }
 
-  // Update user stats
-  const user = getCurrentUser();
-  if (user) {
-    const statsRef = ref(db, `users/${user.uid}/stats`);
-    const statsSnap = await get(statsRef);
-    const stats = statsSnap.exists() ? statsSnap.val() : { gamesPlayed: 0, wins: 0, losses: 0 };
-    stats.gamesPlayed = (stats.gamesPlayed || 0) + 1;
+    const finishData = {
+      status: 'finished',
+      result: {
+        winner,
+        player1Score: p1?.score || 0,
+        player2Score: p2?.score || 0,
+        player1Lines: p1Lines,
+        player2Lines: p2Lines,
+        player1PU: p1PU,
+        player2PU: p2PU
+      }
+    };
 
-    const iWon  = (winner === myRole);
-    const iLost = (winner !== 'draw' && winner !== myRole);
-    if (iWon)  stats.wins   = (stats.wins   || 0) + 1;
-    if (iLost) stats.losses = (stats.losses || 0) + 1;
-    await set(statsRef, stats);
+    await update(gameRef, finishData);
+    endGame({ ...data, ...finishData });
+  } catch (e) {
+    console.error('Error in finishGame:', e);
+  }
+}
+
+// ── Surrender / Leave Match ──
+export async function surrenderGame() {
+  if (!gameRef) return;
+  try {
+    const snap = await get(gameRef);
+    if (!snap.exists()) return;
+    const data = snap.val();
+    if (data.status === 'finished') return;
+
+    const p1 = data.players?.player1;
+    const p2 = data.players?.player2;
+
+    const finishData = {
+      status: 'finished',
+      result: {
+        winner: oppRole,
+        surrendered: myRole,
+        player1Score: p1?.score || 0,
+        player2Score: p2?.score || 0,
+        player1Lines: p1?.linesCleared || 0,
+        player2Lines: p2?.linesCleared || 0,
+        player1PU: p1?.powerUpsUsed || 0,
+        player2PU: p2?.powerUpsUsed || 0
+      }
+    };
+
+    await update(gameRef, finishData);
+    endGame({ ...data, ...finishData });
+  } catch (e) {
+    console.error('Surrender error:', e);
   }
 }
 
 function endGame(data) {
+  if (isEndGameCalled) return;
+  isEndGameCalled = true;
   gameActive = false;
-  if (gameTimerInterval) clearInterval(gameTimerInterval);
-  if (turnTimerInterval) clearInterval(turnTimerInterval);
+
+  if (gameTimerInterval) { clearInterval(gameTimerInterval); gameTimerInterval = null; }
+  if (turnTimerInterval) { clearInterval(turnTimerInterval); turnTimerInterval = null; }
   if (gameListener) { off(gameRef); gameListener = null; }
 
   sound.stopBGM();
 
-  const myFinal  = data.players[myRole]?.score  || 0;
-  const oppFinal = data.players[oppRole]?.score || 0;
+  const myFinal  = data.players?.[myRole]?.score  || 0;
+  const oppFinal = data.players?.[oppRole]?.score || 0;
   const winner   = data.result?.winner;
 
   let result = 'draw';
@@ -591,12 +626,26 @@ function endGame(data) {
   if (result === 'win') sound.play('victory');
   else sound.play('gameover');
 
+  // Update user stats
+  const user = getCurrentUser();
+  if (user) {
+    const statsRef = ref(db, `users/${user.uid}/stats`);
+    get(statsRef).then((statsSnap) => {
+      const stats = statsSnap.exists() ? statsSnap.val() : { gamesPlayed: 0, wins: 0, losses: 0 };
+      stats.gamesPlayed = (stats.gamesPlayed || 0) + 1;
+      if (result === 'win') stats.wins = (stats.wins || 0) + 1;
+      if (result === 'lose') stats.losses = (stats.losses || 0) + 1;
+      set(statsRef, stats).catch(() => {});
+    }).catch(() => {});
+  }
+
   if (onGameEnd) onGameEnd({
     result,
     myScore:  myFinal,
     oppScore: oppFinal,
-    myName:  data.players[myRole]?.username  || 'You',
-    oppName: data.players[oppRole]?.username || 'Opponent'
+    myName:  data.players?.[myRole]?.username  || 'You',
+    oppName: data.players?.[oppRole]?.username || 'Opponent',
+    surrendered: data.result?.surrendered
   });
 }
 
@@ -1250,6 +1299,7 @@ window.addEventListener('resize', () => {
 // ═══════════════════════════════════════
 export function cleanupGame() {
   gameActive = false;
+  isEndGameCalled = false;
   if (gameTimerInterval) clearInterval(gameTimerInterval);
   if (turnTimerInterval) clearInterval(turnTimerInterval);
   if (gameListener) { off(gameRef); gameListener = null; }
