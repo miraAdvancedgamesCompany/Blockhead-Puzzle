@@ -131,23 +131,27 @@ async function createGameRoom(uid1, username1, uid2, username2) {
     gameEndsAt: now + 90000,
     gameDuration: 90,
     turnDuration: 10,
-    currentTurn: 'player1',
+    currentTurn: Math.random() < 0.5 ? 'player1' : 'player2',
     turnStartedAt: now,
-    board: new Array(64).fill(null),
+    board: new Array(64).fill(0),
     players: {
       player1: {
         uid: uid1,
         username: username1,
         score: 0,
         coins: 100,
-        hammerUsesThisTurn: 0
+        hammerUsesThisTurn: 0,
+        linesCleared: 0,
+        powerUpsUsed: 0
       },
       player2: {
         uid: uid2,
         username: username2,
         score: 0,
         coins: 100,
-        hammerUsesThisTurn: 0
+        hammerUsesThisTurn: 0,
+        linesCleared: 0,
+        powerUpsUsed: 0
       }
     },
     lastMove: null
