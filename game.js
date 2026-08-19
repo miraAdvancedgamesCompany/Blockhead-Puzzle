@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════
-//  Multiplayer Game Engine — v3 Board Sync + Turns
+//  Multiplayer Game Engine — Fixed Sync, Turns & Mobile Touch
 // ═══════════════════════════════════════
 import {
   db, ref, set, get, update, onValue, off
@@ -10,6 +10,7 @@ import { sound } from './sound.js';
 // ═══════ CONSTANTS ═══════
 const COLS = 8, ROWS = 8;
 const TOTAL_CELLS = ROWS * COLS; // 64
+const CELL_GAP = 3;
 
 const BLOCK_COLORS = [
   { bg: '#D62828', shine: '#FF6B6B', shadow: '#8B0000' },
@@ -41,7 +42,7 @@ const SHAPES_DEF = [
 let gameId = null;
 let gameRef = null;
 let gameListener = null;
-let localGrid = [];          // local view of shared board (null = empty)
+let localGrid = [];          // local view of shared board (null = empty cell)
 let myShapes = [null, null, null]; // PRIVATE inventory
 let myCoins = 100;
 let myScore = 0;
@@ -55,7 +56,7 @@ let selectedSlot = null;
 let hammerMode = false;
 let isClearing = false;
 let combo = 0;
-let CELL_SIZE = 38;
+let CELL_SIZE = 36;
 let dragging = null;
 let pendingResize = false;
 
@@ -74,8 +75,6 @@ let gameActive = false;
 let lastProcessedMoveTs = 0;
 let prevTurnValue = null;
 let isFirstLoad = true;
-// Timestamp of our last sent board update — used to avoid re-animating our own changes
-let myLastBoardSentTs = 0;
 
 // Callbacks
 let onGameEnd = null;
@@ -138,7 +137,6 @@ export async function startGame(gId) {
   isClearing = false;
   gameActive = true;
   lastProcessedMoveTs = 0;
-  myLastBoardSentTs = 0;
   prevTurnValue = null;
   isFirstLoad = true;
 
@@ -196,12 +194,12 @@ function listenForGameChanges() {
       myPowerUpsUsed = data.players[myRole]?.powerUpsUsed || 0;
     }
 
-    // ── BOARD SYNC — always compare & update ──
+    // ── BOARD SYNC ──
     if (data.board) {
       const serverGrid = boardFromFirebase(data.board);
 
-      // Find differences between our local board and server board
-      const addedCells  = [];   // empty → filled
+      // Find differences between local board and server board
+      const addedCells   = [];   // empty → filled
       const removedCells = [];  // filled → empty
 
       for (let i = 0; i < TOTAL_CELLS; i++) {
@@ -214,7 +212,6 @@ function listenForGameChanges() {
       const boardChanged = addedCells.length > 0 || removedCells.length > 0;
 
       if (boardChanged) {
-        // Determine if the change came from the OPPONENT
         const isOpponentChange = data.lastMove &&
           data.lastMove.by === oppRole &&
           data.lastMove.timestamp > lastProcessedMoveTs;
@@ -226,7 +223,10 @@ function listenForGameChanges() {
           if (addedCells.length > 0) {
             addedCells.forEach(i => {
               const cell = document.querySelector(`.cell[data-i="${i}"]`);
-              if (cell) { cell.classList.add('pop-in'); setTimeout(() => cell.classList.remove('pop-in'), 400); }
+              if (cell) {
+                cell.classList.add('pop-in');
+                setTimeout(() => cell.classList.remove('pop-in'), 350);
+              }
             });
             sound.play('place');
           }
@@ -244,19 +244,22 @@ function listenForGameChanges() {
             });
             sound.play('pop');
             const bw = document.getElementById('board-wrapper');
-            bw.classList.add('shake');
-            setTimeout(() => bw.classList.remove('shake'), 400);
+            if (bw) {
+              bw.classList.add('shake');
+              setTimeout(() => bw.classList.remove('shake'), 400);
+            }
 
-            // Delay grid update so animation is visible
-            setTimeout(() => { localGrid = serverGrid; paintGrid(); }, 300);
-            // Skip immediate paint below
+            // Sync after animation completes, cleanly resetting cell states
+            setTimeout(() => {
+              localGrid = serverGrid;
+              paintGrid();
+            }, 320);
           } else {
             localGrid = serverGrid;
             paintGrid();
           }
         } else {
-          // Our own change echoed back, OR an unknown change
-          // Just sync silently
+          // Own move or silent sync
           localGrid = serverGrid;
           paintGrid();
         }
@@ -291,22 +294,30 @@ function listenForGameChanges() {
 }
 
 // ═══════════════════════════════════════
-//  BOARD UI
+//  BOARD UI & RESPONSIVE SIZING
 // ═══════════════════════════════════════
 function calcCellSize() {
   const vw = window.innerWidth;
   const vh = window.innerHeight;
-  const maxByW = Math.floor((vw - 40) / COLS) - 3;
-  const maxByH = Math.floor((vh - 280) / ROWS) - 3;
-  CELL_SIZE = Math.max(26, Math.min(42, maxByW, maxByH));
+
+  // Account for header, turn timer, inventory, powerups, paddings
+  const overheadH = 250;
+  const availableH = Math.max(160, vh - overheadH);
+  const availableW = Math.min(vw - 28, 440);
+
+  const maxByW = Math.floor((availableW - 35) / COLS);
+  const maxByH = Math.floor((availableH - 35) / ROWS);
+
+  CELL_SIZE = Math.max(22, Math.min(42, maxByW, maxByH));
 }
 
 function buildBoard() {
   const board = document.getElementById('board');
+  if (!board) return;
   board.innerHTML = '';
   board.style.gridTemplateColumns = `repeat(${COLS}, ${CELL_SIZE}px)`;
   board.style.gridTemplateRows    = `repeat(${ROWS}, ${CELL_SIZE}px)`;
-  board.style.gap = '3px';
+  board.style.gap = `${CELL_GAP}px`;
 
   for (let i = 0; i < TOTAL_CELLS; i++) {
     const cell = document.createElement('div');
@@ -317,16 +328,19 @@ function buildBoard() {
 }
 
 function paintGrid() {
-  const cells = document.getElementById('board').querySelectorAll('.cell');
+  const board = document.getElementById('board');
+  if (!board) return;
+  const cells = board.querySelectorAll('.cell');
   cells.forEach((cell, i) => {
     const c = localGrid[i];
     if (c) {
       cell.classList.add('filled');
-      cell.style.background = `linear-gradient(135deg, ${c.bg} 60%, ${c.shadow})`;
+      cell.classList.remove('clear-pop', 'hammer-smash');
+      cell.style.background  = `linear-gradient(135deg, ${c.bg} 60%, ${c.shadow})`;
       cell.style.borderColor = c.shadow;
     } else {
-      cell.classList.remove('filled');
-      cell.style.background = '';
+      cell.classList.remove('filled', 'clear-pop', 'hammer-smash', 'pop-in');
+      cell.style.background  = '';
       cell.style.borderColor = '';
     }
   });
@@ -339,15 +353,22 @@ function updateGameUI(data) {
   const my  = data.players[myRole];
   const opp = data.players[oppRole];
 
-  document.getElementById('gps-me-name').textContent  = my?.username  || 'You';
-  document.getElementById('gps-me-score').textContent  = my?.score || 0;
-  document.getElementById('gps-opp-name').textContent  = opp?.username || 'Opp';
-  document.getElementById('gps-opp-score').textContent = opp?.score || 0;
+  const myNameEl = document.getElementById('gps-me-name');
+  const myScoreEl = document.getElementById('gps-me-score');
+  const oppNameEl = document.getElementById('gps-opp-name');
+  const oppScoreEl = document.getElementById('gps-opp-score');
+  const coinsEl = document.getElementById('game-coins-val');
 
-  document.getElementById('game-coins-val').textContent = myCoins;
+  if (myNameEl) myNameEl.textContent = my?.username || 'You';
+  if (myScoreEl) myScoreEl.textContent = my?.score || 0;
+  if (oppNameEl) oppNameEl.textContent = opp?.username || 'Opp';
+  if (oppScoreEl) oppScoreEl.textContent = opp?.score || 0;
+  if (coinsEl) coinsEl.textContent = myCoins;
 
-  document.getElementById('gps-me').classList.toggle('active-turn',  currentTurn === myRole);
-  document.getElementById('gps-opp').classList.toggle('active-turn', currentTurn === oppRole);
+  const gpsMe = document.getElementById('gps-me');
+  const gpsOpp = document.getElementById('gps-opp');
+  if (gpsMe) gpsMe.classList.toggle('active-turn', currentTurn === myRole);
+  if (gpsOpp) gpsOpp.classList.toggle('active-turn', currentTurn === oppRole);
 }
 
 function updateTurnState() {
@@ -355,18 +376,19 @@ function updateTurnState() {
   const inventory = document.getElementById('inventory');
   const powerups  = document.getElementById('powerups');
 
-  if (isMyTurn) {
-    indicator.textContent = '🟢 YOUR TURN';
-    indicator.className = 'turn-indicator my-turn';
-    inventory.classList.remove('disabled');
-    powerups.classList.remove('disabled');
-  } else {
-    indicator.textContent = '🔴 OPPONENT\'S TURN';
-    indicator.className = 'turn-indicator opponent-turn';
-    inventory.classList.add('disabled');
-    powerups.classList.add('disabled');
-    if (hammerMode) cancelHammer();
+  if (indicator) {
+    if (isMyTurn) {
+      indicator.textContent = '🟢 YOUR TURN';
+      indicator.className = 'turn-indicator my-turn';
+    } else {
+      indicator.textContent = '🔴 OPPONENT\'S TURN';
+      indicator.className = 'turn-indicator opponent-turn';
+    }
   }
+
+  if (inventory) inventory.classList.toggle('disabled', !isMyTurn);
+  if (powerups) powerups.classList.toggle('disabled', !isMyTurn);
+  if (!isMyTurn && hammerMode) cancelHammer();
 }
 
 // ═══════════════════════════════════════
@@ -416,24 +438,38 @@ function startTurnTimer() {
   }, 100);
 }
 
+// Safe turn switch with race-condition guard
 async function forceEndTurn() {
   if (!gameActive || !gameRef) return;
-  const newTurn = (currentTurn === 'player1') ? 'player2' : 'player1';
   try {
-    await update(gameRef, { currentTurn: newTurn, turnStartedAt: Date.now() });
-  } catch (e) { console.error('Turn switch failed:', e); }
+    const snap = await get(gameRef);
+    if (!snap.exists()) return;
+    const data = snap.val();
+    if (data.status !== 'playing') return;
+
+    // Only switch if >= 9.8s have elapsed
+    const elapsed = Date.now() - (data.turnStartedAt || 0);
+    if (elapsed >= 9800) {
+      const nextTurn = (data.currentTurn === 'player1') ? 'player2' : 'player1';
+      await update(gameRef, {
+        currentTurn: nextTurn,
+        turnStartedAt: Date.now(),
+        [`players/${data.currentTurn}/hammerUsesThisTurn`]: 0
+      });
+    }
+  } catch (e) {
+    console.error('Turn switch failed:', e);
+  }
 }
 
 // ═══════════════════════════════════════
 //  SEND MOVE + SWITCH TURN (atomic)
 //  Called ONLY when a shape is placed on the board.
-//  Power-ups do NOT call this.
 // ═══════════════════════════════════════
 async function sendMoveAndSwitchTurn(indices, color) {
   if (!gameRef || !gameActive) return;
 
   const now = Date.now();
-  myLastBoardSentTs = now;
 
   await update(gameRef, {
     board: boardToFirebase(localGrid),
@@ -441,6 +477,7 @@ async function sendMoveAndSwitchTurn(indices, color) {
     [`players/${myRole}/coins`]:           myCoins,
     [`players/${myRole}/linesCleared`]:     myLinesCleared,
     [`players/${myRole}/powerUpsUsed`]:     myPowerUpsUsed,
+    [`players/${myRole}/hammerUsesThisTurn`]: 0,
     currentTurn:     oppRole,          // switch turn
     turnStartedAt:   now,
     lastMove: {
@@ -455,18 +492,17 @@ async function sendMoveAndSwitchTurn(indices, color) {
 // Send board-only update (for hammer — does NOT switch turn)
 async function sendBoardUpdate() {
   if (!gameRef || !gameActive) return;
-  myLastBoardSentTs = Date.now();
 
   await update(gameRef, {
     board: boardToFirebase(localGrid),
-    [`players/${myRole}/coins`]:       myCoins,
-    [`players/${myRole}/powerUpsUsed`]: myPowerUpsUsed,
+    [`players/${myRole}/coins`]:              myCoins,
+    [`players/${myRole}/powerUpsUsed`]:        myPowerUpsUsed,
     [`players/${myRole}/hammerUsesThisTurn`]: hammerUsesThisTurn
   });
 }
 
 // ═══════════════════════════════════════
-//  GAME END + TIEBREAKER
+//  GAME END + 3-LEVEL TIEBREAKER
 // ═══════════════════════════════════════
 async function finishGame() {
   if (!gameActive) return;
@@ -484,19 +520,28 @@ async function finishGame() {
   const p2Lines = p2?.linesCleared || 0;
   const p1PU    = p1?.powerUpsUsed || 0;
   const p2PU    = p2?.powerUpsUsed || 0;
-  const lastTurn = data.currentTurn; // who was playing when time expired
+  const lastTurn = data.currentTurn; // who was active when time expired
 
   let winner = 'draw';
 
-  // 1) More lines cleared wins
-  if (p1Lines > p2Lines)      winner = 'player1';
-  else if (p2Lines > p1Lines) winner = 'player2';
-  // 2) Tie → fewer power-ups wins
-  else if (p1PU < p2PU)       winner = 'player1';
-  else if (p2PU < p1PU)       winner = 'player2';
-  // 3) Still tie → player NOT on their turn wins
-  else if (lastTurn === 'player2') winner = 'player1';
-  else if (lastTurn === 'player1') winner = 'player2';
+  // Rule 1: More lines cleared wins
+  if (p1Lines > p2Lines) {
+    winner = 'player1';
+  } else if (p2Lines > p1Lines) {
+    winner = 'player2';
+  }
+  // Rule 2: Tie → fewer power-ups used wins
+  else if (p1PU < p2PU) {
+    winner = 'player1';
+  } else if (p2PU < p1PU) {
+    winner = 'player2';
+  }
+  // Rule 3: Still tie → player who was NOT on turn wins (player on turn timed out)
+  else if (lastTurn === 'player2') {
+    winner = 'player1';
+  } else if (lastTurn === 'player1') {
+    winner = 'player2';
+  }
 
   await update(gameRef, {
     status: 'finished',
@@ -511,18 +556,20 @@ async function finishGame() {
     }
   });
 
-  // Update our stats
+  // Update user stats
   const user = getCurrentUser();
-  const statsRef = ref(db, `users/${user.uid}/stats`);
-  const statsSnap = await get(statsRef);
-  const stats = statsSnap.exists() ? statsSnap.val() : { gamesPlayed: 0, wins: 0, losses: 0 };
-  stats.gamesPlayed = (stats.gamesPlayed || 0) + 1;
+  if (user) {
+    const statsRef = ref(db, `users/${user.uid}/stats`);
+    const statsSnap = await get(statsRef);
+    const stats = statsSnap.exists() ? statsSnap.val() : { gamesPlayed: 0, wins: 0, losses: 0 };
+    stats.gamesPlayed = (stats.gamesPlayed || 0) + 1;
 
-  const iWon  = (winner === myRole);
-  const iLost = (winner !== 'draw' && winner !== myRole);
-  if (iWon)  stats.wins   = (stats.wins   || 0) + 1;
-  if (iLost) stats.losses = (stats.losses || 0) + 1;
-  await set(statsRef, stats);
+    const iWon  = (winner === myRole);
+    const iLost = (winner !== 'draw' && winner !== myRole);
+    if (iWon)  stats.wins   = (stats.wins   || 0) + 1;
+    if (iLost) stats.losses = (stats.losses || 0) + 1;
+    await set(statsRef, stats);
+  }
 }
 
 function endGame(data) {
@@ -563,7 +610,9 @@ function randomShape() {
 }
 
 function refillShapes() {
-  for (let s = 0; s < 3; s++) if (!myShapes[s]) myShapes[s] = randomShape();
+  for (let s = 0; s < 3; s++) {
+    if (!myShapes[s]) myShapes[s] = randomShape();
+  }
   renderInventory();
 }
 
@@ -593,23 +642,25 @@ function buildShapeEl(shapeData, slotIdx) {
   el.className = 'shape';
   el.dataset.slot = slotIdx;
 
-  const scale = Math.min(1, 68 / (Math.max(rows, cols) * (CELL_SIZE + 3)));
+  const scale = Math.min(1, 62 / (Math.max(rows, cols) * (CELL_SIZE + CELL_GAP)));
   const bSize = Math.round(CELL_SIZE * scale);
 
   el.style.gridTemplateColumns = `repeat(${cols}, ${bSize}px)`;
   el.style.gridTemplateRows    = `repeat(${rows}, ${bSize}px)`;
-  el.style.gap = '3px';
+  el.style.gap = `${CELL_GAP}px`;
   el.style.position = 'absolute';
 
   flat.forEach(v => {
     const b = document.createElement('div');
     b.className = 'block';
-    if (!v) { b.style.visibility = 'hidden'; b.style.pointerEvents = 'none'; }
-    else {
+    if (!v) {
+      b.style.visibility = 'hidden';
+      b.style.pointerEvents = 'none';
+    } else {
       b.style.background  = `linear-gradient(135deg, ${color.shine} 0%, ${color.bg} 55%, ${color.shadow} 100%)`;
       b.style.borderColor  = color.shadow;
-      b.style.width  = bSize + 'px';
-      b.style.height = bSize + 'px';
+      b.style.width  = `${bSize}px`;
+      b.style.height = `${bSize}px`;
     }
     el.appendChild(b);
   });
@@ -619,9 +670,12 @@ function buildShapeEl(shapeData, slotIdx) {
 }
 
 // ═══════════════════════════════════════
-//  DRAG & DROP — Mobile-first
+//  DRAG & DROP — Mobile-first & Touch-friendly
 // ═══════════════════════════════════════
-function getDragOffset() { return Math.max(30, window.innerHeight * 0.04); }
+function getDragOffset() {
+  // Comfortable vertical offset above finger
+  return Math.max(35, Math.min(65, window.innerHeight * 0.07));
+}
 
 function setupDragForShape(el, slotIdx) {
   el.addEventListener('pointerdown', (e) => onPointerDown(e, el, slotIdx), { passive: false });
@@ -635,7 +689,7 @@ function onPointerDown(e, el, slotIdx) {
   const shape = myShapes[slotIdx];
   if (!shape) return;
 
-  const isTouch = (e.pointerType === 'touch');
+  const isTouch = (e.pointerType === 'touch' || e.pointerType === 'pen');
 
   dragging = {
     slotIdx,
@@ -649,7 +703,7 @@ function onPointerDown(e, el, slotIdx) {
     isTouch
   };
 
-  // On touch: immediately start drag (no threshold wait)
+  // Immediate drag initialization on touch
   if (isTouch) {
     dragging.hasMoved = true;
     createDragElement(e);
@@ -670,7 +724,7 @@ function createDragElement(e) {
   dragEl.className = 'shape dragging';
   dragEl.style.gridTemplateColumns = `repeat(${cols}, ${CELL_SIZE}px)`;
   dragEl.style.gridTemplateRows    = `repeat(${rows}, ${CELL_SIZE}px)`;
-  dragEl.style.gap = '3px';
+  dragEl.style.gap = `${CELL_GAP}px`;
   dragEl.style.position = 'fixed';
   dragEl.style.zIndex = 1000;
   dragEl.style.pointerEvents = 'none';
@@ -678,20 +732,21 @@ function createDragElement(e) {
   def.grid.flat().forEach(v => {
     const b = document.createElement('div');
     b.className = 'block';
-    b.style.width  = CELL_SIZE + 'px';
-    b.style.height = CELL_SIZE + 'px';
-    if (!v) b.style.visibility = 'hidden';
-    else {
+    b.style.width  = `${CELL_SIZE}px`;
+    b.style.height = `${CELL_SIZE}px`;
+    if (!v) {
+      b.style.visibility = 'hidden';
+    } else {
       b.style.background  = `linear-gradient(135deg, ${color.shine} 0%, ${color.bg} 55%, ${color.shadow} 100%)`;
       b.style.borderColor  = color.shadow;
     }
     dragEl.appendChild(b);
   });
 
-  const totalW = cols * CELL_SIZE + (cols - 1) * 3;
-  const totalH = rows * CELL_SIZE + (rows - 1) * 3;
-  dragEl.style.left = (e.clientX - totalW / 2) + 'px';
-  dragEl.style.top  = (e.clientY - totalH / 2 - offset) + 'px';
+  const totalW = cols * CELL_SIZE + (cols - 1) * CELL_GAP;
+  const totalH = rows * CELL_SIZE + (rows - 1) * CELL_GAP;
+  dragEl.style.left = `${e.clientX - totalW / 2}px`;
+  dragEl.style.top  = `${e.clientY - totalH / 2 - offset}px`;
 
   document.body.appendChild(dragEl);
   dragging.dragEl = dragEl;
@@ -702,11 +757,10 @@ function globalPointerMove(e) {
   if (!dragging) return;
   e.preventDefault();
 
-  // Desktop: wait for threshold before starting drag
   if (!dragging.hasMoved) {
     const dx = e.clientX - dragging.startX;
     const dy = e.clientY - dragging.startY;
-    if (Math.sqrt(dx * dx + dy * dy) < 8) return;
+    if (Math.sqrt(dx * dx + dy * dy) < 6) return;
 
     dragging.hasMoved = true;
     createDragElement(e);
@@ -715,11 +769,14 @@ function globalPointerMove(e) {
 
   const { def } = dragging;
   const rows   = def.grid.length, cols = def.cols;
-  const totalW = cols * CELL_SIZE + (cols - 1) * 3;
-  const totalH = rows * CELL_SIZE + (rows - 1) * 3;
+  const totalW = cols * CELL_SIZE + (cols - 1) * CELL_GAP;
+  const totalH = rows * CELL_SIZE + (rows - 1) * CELL_GAP;
   const offset = getDragOffset();
-  dragging.dragEl.style.left = (e.clientX - totalW / 2) + 'px';
-  dragging.dragEl.style.top  = (e.clientY - totalH / 2 - offset) + 'px';
+
+  if (dragging.dragEl) {
+    dragging.dragEl.style.left = `${e.clientX - totalW / 2}px`;
+    dragging.dragEl.style.top  = `${e.clientY - totalH / 2 - offset}px`;
+  }
 
   clearHighlights();
   const cells = getTargetCells(e.clientX, e.clientY, def);
@@ -736,7 +793,7 @@ function globalPointerUp(e) {
   if (!dragging) return;
   e.preventDefault();
 
-  // TAP on desktop (no movement) → toggle selection
+  // Desktop click without movement: toggle selection
   if (!dragging.hasMoved) {
     selectShape(dragging.slotIdx);
     dragging = null;
@@ -751,16 +808,15 @@ function globalPointerUp(e) {
   let placed = false;
 
   if (cells && canPlace(cells.indices, localGrid)) {
-    // ══ PLACE the shape ══
+    // ══ PLACE THE SHAPE ON BOARD ══
     cells.indices.forEach(i => {
       localGrid[i] = color;
       const cell = document.querySelector(`.cell[data-i="${i}"]`);
       if (cell) {
-        cell.classList.add('pop-in');
+        cell.classList.add('filled', 'pop-in');
         cell.style.background  = `linear-gradient(135deg, ${color.bg} 60%, ${color.shadow})`;
         cell.style.borderColor = color.shadow;
-        cell.classList.add('filled');
-        setTimeout(() => cell.classList.remove('pop-in'), 400);
+        setTimeout(() => cell.classList.remove('pop-in'), 350);
       }
     });
 
@@ -780,7 +836,7 @@ function globalPointerUp(e) {
         if (myShapes.every(s => !s)) refillShapes();
         else renderInventory();
       });
-    }, 150);
+    }, 120);
   }
 
   if (!placed) {
@@ -822,7 +878,7 @@ function removeDragListeners() {
 window.addEventListener('blur', cleanupDrag);
 document.addEventListener('visibilitychange', () => { if (document.hidden) cleanupDrag(); });
 
-// ── Prevent scrolling & zooming during gameplay ──
+// ── Prevent mobile scroll and zoom during gameplay ──
 document.addEventListener('touchmove', (e) => {
   if (gameActive) e.preventDefault();
 }, { passive: false });
@@ -830,22 +886,22 @@ document.addEventListener('gesturestart',  (e) => e.preventDefault(), { passive:
 document.addEventListener('gesturechange', (e) => e.preventDefault(), { passive: false });
 
 // ═══════════════════════════════════════
-//  HIT DETECTION
+//  HIT DETECTION (Pixel-Perfect)
 // ═══════════════════════════════════════
 function getTargetCells(px, py, def) {
   const rows = def.grid.length, cols = def.cols;
-  const totalW = cols * CELL_SIZE + (cols - 1) * 3;
-  const totalH = rows * CELL_SIZE + (rows - 1) * 3;
+  const totalW = cols * CELL_SIZE + (cols - 1) * CELL_GAP;
+  const totalH = rows * CELL_SIZE + (rows - 1) * CELL_GAP;
   const offset = getDragOffset();
   const shapeLeft = px - totalW / 2;
   const shapeTop  = py - totalH / 2 - offset;
 
-  const boardEl   = document.getElementById('board');
+  const boardEl = document.getElementById('board');
+  if (!boardEl) return null;
   const boardRect = boardEl.getBoundingClientRect();
-  const gap = 3;
 
-  const col0 = Math.round((shapeLeft - boardRect.left - 8) / (CELL_SIZE + gap));
-  const row0 = Math.round((shapeTop  - boardRect.top  - 8) / (CELL_SIZE + gap));
+  const col0 = Math.round((shapeLeft - boardRect.left) / (CELL_SIZE + CELL_GAP));
+  const row0 = Math.round((shapeTop  - boardRect.top)  / (CELL_SIZE + CELL_GAP));
 
   const indices = [];
   for (let r = 0; r < rows; r++) {
@@ -870,7 +926,7 @@ function clearHighlights() {
 }
 
 // ═══════════════════════════════════════
-//  LINE CLEARING — tracks linesCleared
+//  LINE CLEARING — Clears Blocks, Keeps Grid Slots
 // ═══════════════════════════════════════
 function checkLines(callback) {
   const rowsToClear = [], colsToClear = [];
@@ -880,7 +936,9 @@ function checkLines(callback) {
   }
   for (let c = 0; c < COLS; c++) {
     let full = true;
-    for (let r = 0; r < ROWS; r++) if (!localGrid[r * COLS + c]) { full = false; break; }
+    for (let r = 0; r < ROWS; r++) {
+      if (!localGrid[r * COLS + c]) { full = false; break; }
+    }
     if (full) colsToClear.push(c);
   }
 
@@ -891,7 +949,7 @@ function checkLines(callback) {
   }
 
   const cleared = rowsToClear.length + colsToClear.length;
-  myLinesCleared += cleared;  // ← track for tiebreaker
+  myLinesCleared += cleared;
   combo++;
   isClearing = true;
 
@@ -907,20 +965,25 @@ function checkLines(callback) {
     if (cell) cell.classList.add('clear-pop');
   });
 
-  // Score
+  // Score calculation
   const pts = cleared * 100 * combo;
   myScore += pts;
 
   const bx = document.getElementById('board-wrapper');
-  const cx = bx.getBoundingClientRect().left + bx.offsetWidth / 2;
-  const cy = bx.getBoundingClientRect().top  + bx.offsetHeight / 2;
-  showScorePop(cx, cy - 30, '+' + pts);
+  if (bx) {
+    const rect = bx.getBoundingClientRect();
+    showScorePop(rect.left + rect.width / 2, rect.top + rect.height / 2 - 30, `+${pts}`);
+    bx.classList.add('shake');
+    setTimeout(() => bx.classList.remove('shake'), 400);
+  }
 
   if (combo >= 2) {
     const banner = document.getElementById('combo-banner');
-    banner.textContent = combo + 'x COMBO! 🔥';
-    banner.classList.add('show');
-    setTimeout(() => banner.classList.remove('show'), 1200);
+    if (banner) {
+      banner.textContent = `${combo}x COMBO! 🔥`;
+      banner.classList.add('show');
+      setTimeout(() => banner.classList.remove('show'), 1200);
+    }
     sound.play('combo');
   }
 
@@ -933,16 +996,15 @@ function checkLines(callback) {
   });
 
   sound.play('pop');
-  bx.classList.add('shake');
-  setTimeout(() => bx.classList.remove('shake'), 400);
 
+  // After pop animation: cleanly empty the cells so they can receive blocks again
   setTimeout(() => {
     toKill.forEach(i => {
       localGrid[i] = null;
       const cell = document.querySelector(`.cell[data-i="${i}"]`);
       if (cell) {
-        cell.classList.remove('clear-pop', 'filled');
-        cell.style.background = '';
+        cell.classList.remove('clear-pop', 'filled', 'pop-in', 'hammer-smash');
+        cell.style.background  = '';
         cell.style.borderColor = '';
       }
     });
@@ -952,7 +1014,7 @@ function checkLines(callback) {
 }
 
 // ═══════════════════════════════════════
-//  SHAPE SELECTION
+//  SHAPE SELECTION (Desktop click)
 // ═══════════════════════════════════════
 function selectShape(slotIdx) {
   if (!myShapes[slotIdx] || !isMyTurn || !gameActive) return;
@@ -966,7 +1028,7 @@ function selectShape(slotIdx) {
 }
 
 // ═══════════════════════════════════════
-//  POWER-UPS — do NOT end the turn
+//  POWER-UPS — Do NOT end the turn
 // ═══════════════════════════════════════
 function updatePowerupButtons() {
   const rot = document.getElementById('btn-rotate');
@@ -995,15 +1057,18 @@ export function usePowerRotate() {
   if (myCoins < 20) return;
   if (selectedSlot === null || !myShapes[selectedSlot]) {
     const inv = document.getElementById('inventory');
-    inv.classList.remove('flash-hint');
-    void inv.offsetWidth;
-    inv.classList.add('flash-hint');
+    if (inv) {
+      inv.classList.remove('flash-hint');
+      void inv.offsetWidth;
+      inv.classList.add('flash-hint');
+    }
     return;
   }
 
   myCoins -= 20;
-  myPowerUpsUsed++;  // ← track for tiebreaker
-  document.getElementById('game-coins-val').textContent = myCoins;
+  myPowerUpsUsed++;
+  const coinsEl = document.getElementById('game-coins-val');
+  if (coinsEl) coinsEl.textContent = myCoins;
 
   const shape = myShapes[selectedSlot];
   const old = shape.def.grid;
@@ -1018,9 +1083,12 @@ export function usePowerRotate() {
 
   sound.play('powerup');
   const btn = document.getElementById('btn-rotate');
-  btn.classList.remove('used'); void btn.offsetWidth; btn.classList.add('used');
+  if (btn) {
+    btn.classList.remove('used');
+    void btn.offsetWidth;
+    btn.classList.add('used');
+  }
 
-  // Sync coins + powerups to server (NO turn switch)
   update(gameRef, {
     [`players/${myRole}/coins`]:       myCoins,
     [`players/${myRole}/powerUpsUsed`]: myPowerUpsUsed
@@ -1034,7 +1102,8 @@ export function usePowerHammer() {
   if (myCoins < 30 || hammerUsesThisTurn >= 3) return;
 
   hammerMode = !hammerMode;
-  document.getElementById('board-wrapper').classList.toggle('hammer-mode', hammerMode);
+  const bw = document.getElementById('board-wrapper');
+  if (bw) bw.classList.toggle('hammer-mode', hammerMode);
   updatePowerupButtons();
   if (hammerMode) sound.play('click');
   else cancelHammer();
@@ -1053,17 +1122,21 @@ export function usePowerRefresh() {
   if (!myShapes.some(s => s)) return;
 
   myCoins -= 40;
-  myPowerUpsUsed++;  // ← track
-  document.getElementById('game-coins-val').textContent = myCoins;
+  myPowerUpsUsed++;
+  const coinsEl = document.getElementById('game-coins-val');
+  if (coinsEl) coinsEl.textContent = myCoins;
 
   selectedSlot = null;
   myShapes = [null, null, null];
 
   sound.play('powerup');
   const btn = document.getElementById('btn-refresh');
-  btn.classList.remove('used'); void btn.offsetWidth; btn.classList.add('used');
+  if (btn) {
+    btn.classList.remove('used');
+    void btn.offsetWidth;
+    btn.classList.add('used');
+  }
 
-  // Sync (NO turn switch)
   update(gameRef, {
     [`players/${myRole}/coins`]:       myCoins,
     [`players/${myRole}/powerUpsUsed`]: myPowerUpsUsed
@@ -1079,10 +1152,11 @@ export function usePowerRefresh() {
 }
 
 // ═══════════════════════════════════════
-//  HAMMER BOARD INTERACTION — does NOT end turn
+//  HAMMER BOARD INTERACTION — Does NOT end turn
 // ═══════════════════════════════════════
 function setupBoardInteraction() {
   const board = document.getElementById('board');
+  if (!board) return;
   board.removeEventListener('pointerdown', handleBoardClick);
   board.addEventListener('pointerdown', handleBoardClick, { passive: false });
 }
@@ -1099,12 +1173,12 @@ function handleBoardClick(e) {
   if (!localGrid[i]) { cancelHammer(); return; }
   if (myCoins < 30 || hammerUsesThisTurn >= 3) { cancelHammer(); return; }
 
-  // Destroy block
+  // Destroy single block
   const color = localGrid[i];
   localGrid[i] = null;
   cell.classList.add('hammer-smash');
   setTimeout(() => {
-    cell.classList.remove('hammer-smash', 'filled');
+    cell.classList.remove('hammer-smash', 'filled', 'pop-in', 'clear-pop');
     cell.style.background  = '';
     cell.style.borderColor = '';
   }, 350);
@@ -1114,11 +1188,12 @@ function handleBoardClick(e) {
 
   myCoins -= 30;
   hammerUsesThisTurn++;
-  myPowerUpsUsed++;  // ← track
-  document.getElementById('game-coins-val').textContent = myCoins;
+  myPowerUpsUsed++;
+  const coinsEl = document.getElementById('game-coins-val');
+  if (coinsEl) coinsEl.textContent = myCoins;
   sound.play('hammer');
 
-  // Send board + coins (NO turn switch)
+  // Send board update (NO turn switch)
   sendBoardUpdate();
 
   if (hammerUsesThisTurn >= 3) cancelHammer();
@@ -1132,26 +1207,26 @@ function showScorePop(x, y, text) {
   const el = document.createElement('div');
   el.className = 'score-pop';
   el.textContent = text;
-  el.style.left = x + 'px';
-  el.style.top  = y + 'px';
+  el.style.left = `${x}px`;
+  el.style.top  = `${y}px`;
   document.body.appendChild(el);
   setTimeout(() => el.remove(), 1000);
 }
 
 function sparkle(x, y, color) {
-  for (let i = 0; i < 10; i++) {
+  for (let i = 0; i < 8; i++) {
     const s = document.createElement('div');
     s.className = 'spark';
-    s.style.left = x + 'px';
-    s.style.top  = y + 'px';
+    s.style.left = `${x}px`;
+    s.style.top  = `${y}px`;
     s.style.background = color;
     const angle = Math.random() * 360;
-    const dist  = 30 + Math.random() * 50;
-    s.style.setProperty('--tx', Math.cos(angle * Math.PI / 180) * dist + 'px');
-    s.style.setProperty('--ty', Math.sin(angle * Math.PI / 180) * dist + 'px');
-    s.style.animationDuration = (0.4 + Math.random() * 0.4) + 's';
+    const dist  = 25 + Math.random() * 45;
+    s.style.setProperty('--tx', `${Math.cos(angle * Math.PI / 180) * dist}px`);
+    s.style.setProperty('--ty', `${Math.sin(angle * Math.PI / 180) * dist}px`);
+    s.style.animationDuration = `${0.35 + Math.random() * 0.35}s`;
     document.body.appendChild(s);
-    setTimeout(() => s.remove(), 900);
+    setTimeout(() => s.remove(), 750);
   }
 }
 
@@ -1184,5 +1259,4 @@ export function cleanupGame() {
   prevTurnValue = null;
   isFirstLoad = true;
   lastProcessedMoveTs = 0;
-  myLastBoardSentTs = 0;
 }
