@@ -66,6 +66,11 @@ async function createUserProfile(uid, username, isGuest) {
       wins: 0,
       losses: 0
     },
+    rankStats: {
+      totalPoints: 0,
+      totalRowsCleared: 0,
+      totalWins: 0
+    },
     status: 'online',
     lastSeen: now
   };

@@ -2,10 +2,11 @@
 //  Multiplayer Game Engine — Fixed Sync, Turns & Mobile Touch
 // ═══════════════════════════════════════
 import {
-  db, ref, set, get, update, onValue, off
+  db, ref, set, get, update, onValue, off, push, onChildAdded
 } from './firebase-config.js';
 import { getCurrentUser, getCurrentUserData } from './auth.js';
 import { sound } from './sound.js';
+import { getRankFromPoints } from './ranking.js';
 
 // ═══════ CONSTANTS ═══════
 const COLS = 8, ROWS = 8;
@@ -42,6 +43,7 @@ const SHAPES_DEF = [
 let gameId = null;
 let gameRef = null;
 let gameListener = null;
+let chatListener = null;
 let localGrid = [];          // local view of shared board (null = empty cell)
 let myShapes = [null, null, null]; // PRIVATE inventory
 let myCoins = 100;
@@ -70,6 +72,12 @@ let turnTimerInterval = null;
 let gameEndsAt = 0;
 let turnStartedAt = 0;
 let gameActive = false;
+
+// Game mode: 'play' or 'vs'
+let gameMode = 'play';
+
+// Chat tracking
+let lastChatTs = 0;
 
 // Sync tracking
 let lastProcessedMoveTs = 0;
@@ -106,15 +114,19 @@ function boardFromFirebase(fbBoard) {
 // ═══════════════════════════════════════
 //  GAME INITIALIZATION
 // ═══════════════════════════════════════
-export async function startGame(gId) {
+export async function startGame(gId, mode = 'play') {
   gameId = gId;
   gameRef = ref(db, `games/${gameId}`);
+  gameMode = mode;
 
   const snap = await get(gameRef);
   if (!snap.exists()) { console.error('Game not found:', gameId); return; }
 
   const data = snap.val();
   const user = getCurrentUser();
+
+  // Use gameMode from Firebase if available (for invited games)
+  if (data.gameMode) gameMode = data.gameMode;
 
   // Determine roles
   if (data.players.player1.uid === user.uid) {
@@ -140,6 +152,7 @@ export async function startGame(gId) {
   lastProcessedMoveTs = 0;
   prevTurnValue = null;
   isFirstLoad = true;
+  lastChatTs = 0;
 
   gameEndsAt = data.gameEndsAt;
   turnStartedAt = data.turnStartedAt;
@@ -167,6 +180,9 @@ export async function startGame(gId) {
 
   // Firebase listener
   listenForGameChanges();
+
+  // Chat listener
+  listenForChatMessages();
 
   // Hammer click handler
   setupBoardInteraction();
@@ -612,6 +628,7 @@ function endGame(data) {
   if (gameTimerInterval) { clearInterval(gameTimerInterval); gameTimerInterval = null; }
   if (turnTimerInterval) { clearInterval(turnTimerInterval); turnTimerInterval = null; }
   if (gameListener) { off(gameRef); gameListener = null; }
+  if (chatListener) { chatListener = null; }
 
   sound.stopBGM();
 
@@ -626,9 +643,13 @@ function endGame(data) {
   if (result === 'win') sound.play('victory');
   else sound.play('gameover');
 
-  // Update user stats
+  // Update user stats — ONLY in Play mode, NOT VS
   const user = getCurrentUser();
-  if (user) {
+  const userData = getCurrentUserData();
+  const isGuest = userData?.isGuest || false;
+
+  if (user && gameMode === 'play') {
+    // Update basic stats for all play mode users
     const statsRef = ref(db, `users/${user.uid}/stats`);
     get(statsRef).then((statsSnap) => {
       const stats = statsSnap.exists() ? statsSnap.val() : { gamesPlayed: 0, wins: 0, losses: 0 };
@@ -637,7 +658,20 @@ function endGame(data) {
       if (result === 'lose') stats.losses = (stats.losses || 0) + 1;
       set(statsRef, stats).catch(() => {});
     }).catch(() => {});
+
+    // Update ranking stats — only for NON-Guest users in Play mode
+    if (!isGuest) {
+      const rankRef = ref(db, `users/${user.uid}/rankStats`);
+      get(rankRef).then((rankSnap) => {
+        const rs = rankSnap.exists() ? rankSnap.val() : { totalPoints: 0, totalRowsCleared: 0, totalWins: 0 };
+        rs.totalPoints = (rs.totalPoints || 0) + myFinal;
+        rs.totalRowsCleared = (rs.totalRowsCleared || 0) + (data.players?.[myRole]?.linesCleared || 0);
+        if (result === 'win') rs.totalWins = (rs.totalWins || 0) + 1;
+        set(rankRef, rs).catch(() => {});
+      }).catch(() => {});
+    }
   }
+  // VS mode: NO stats updates at all
 
   if (onGameEnd) onGameEnd({
     result,
@@ -1295,6 +1329,84 @@ window.addEventListener('resize', () => {
 });
 
 // ═══════════════════════════════════════
+//  IN-GAME CHAT SYSTEM (💬)
+// ═══════════════════════════════════════
+let chatTimeouts = [];
+
+export async function sendChatMessage(text) {
+  if (!gameRef || !gameActive) return;
+  const cleanText = (text || '').trim();
+  if (!cleanText || cleanText.length === 0) return;
+  const finalMsg = cleanText.slice(0, 90);
+
+  const now = Date.now();
+  const chatRef = push(ref(db, `games/${gameId}/chat`));
+  await set(chatRef, {
+    senderRole: myRole,
+    senderName: (getCurrentUserData() || {}).username || 'Player',
+    text: finalMsg,
+    timestamp: now
+  });
+}
+
+function listenForChatMessages() {
+  if (!gameRef) return;
+  const chatListRef = ref(db, `games/${gameId}/chat`);
+
+  chatListener = onChildAdded(chatListRef, (snap) => {
+    if (!snap.exists()) return;
+    const msg = snap.val();
+    if (!msg || !msg.text) return;
+
+    // Ignore stale messages
+    if (msg.timestamp < (turnStartedAt || Date.now()) - 60000) return;
+
+    const isMe = (msg.senderRole === myRole);
+    displayChatBubble(msg.text, msg.senderName, isMe);
+  });
+}
+
+function displayChatBubble(text, senderName, isMe) {
+  let container = document.getElementById('chat-bubbles-container');
+  if (!container) {
+    container = document.createElement('div');
+    container.id = 'chat-bubbles-container';
+    container.className = 'chat-bubbles-container';
+    document.body.appendChild(container);
+  }
+
+  const bubble = document.createElement('div');
+  bubble.className = `chat-bubble ${isMe ? 'is-me' : 'is-opp'}`;
+
+  // Safe text escaping
+  const safeText = text.replace(/[&<>"']/g, m => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  })[m]);
+
+  bubble.innerHTML = `
+    <div class="chat-bubble-header">
+      <span class="chat-bubble-avatar">${isMe ? '🔵' : '🔴'}</span>
+      <span class="chat-bubble-sender">${isMe ? 'You' : (senderName || 'Opponent')}</span>
+    </div>
+    <div class="chat-bubble-text">${safeText}</div>
+  `;
+
+  container.appendChild(bubble);
+  sound.play('click');
+
+  // Fade out and remove after 5 seconds
+  const t1 = setTimeout(() => {
+    bubble.classList.add('fading-out');
+  }, 4600);
+
+  const t2 = setTimeout(() => {
+    bubble.remove();
+  }, 5000);
+
+  chatTimeouts.push(t1, t2);
+}
+
+// ═══════════════════════════════════════
 //  CLEANUP
 // ═══════════════════════════════════════
 export function cleanupGame() {
@@ -1302,7 +1414,18 @@ export function cleanupGame() {
   isEndGameCalled = false;
   if (gameTimerInterval) clearInterval(gameTimerInterval);
   if (turnTimerInterval) clearInterval(turnTimerInterval);
-  if (gameListener) { off(gameRef); gameListener = null; }
+  if (gameListener && gameRef) { off(gameRef); gameListener = null; }
+  if (chatListener && gameRef) { off(ref(db, `games/${gameId}/chat`)); chatListener = null; }
+
+  // Clear chat bubbles and timeouts
+  chatTimeouts.forEach(t => clearTimeout(t));
+  chatTimeouts = [];
+  const container = document.getElementById('chat-bubbles-container');
+  if (container) container.innerHTML = '';
+
+  const chatModal = document.getElementById('chat-modal');
+  if (chatModal) chatModal.classList.remove('active');
+
   sound.stopBGM();
   gameId = null;
   gameRef = null;
@@ -1310,3 +1433,4 @@ export function cleanupGame() {
   isFirstLoad = true;
   lastProcessedMoveTs = 0;
 }
+

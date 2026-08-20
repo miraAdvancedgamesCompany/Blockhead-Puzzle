@@ -8,6 +8,7 @@ import {
   onDisconnect
 } from './firebase-config.js';
 import { getCurrentUser, getCurrentUserData, getUserData, getUserByPlayerId } from './auth.js';
+import { getRankFromPoints, getRankIndex } from './ranking.js';
 
 // ── Module state ──
 let queueListener = null;
@@ -54,6 +55,11 @@ export async function joinMatchmakingQueue() {
   const userData = getCurrentUserData();
   if (!user || !userData) return;
 
+  // Get my rank for priority matching
+  const myRankStats = userData.rankStats || { totalPoints: 0 };
+  const myRank = getRankFromPoints(myRankStats.totalPoints);
+  const myRankIdx = myRank.index;
+
   const queueRef = ref(db, 'matchmaking/queue');
   const snap = await get(queueRef);
 
@@ -62,14 +68,35 @@ export async function joinMatchmakingQueue() {
     const waiterUids = Object.keys(waiters).filter(uid => uid !== user.uid);
 
     if (waiterUids.length > 0) {
-      const opponentUid = waiterUids[0];
-      const opponentData = waiters[opponentUid];
+      // ── Rank-based priority matching ──
+      // Search order: same rank first, then lower ranks (descending), then higher ranks
+      let bestMatch = null;
+      const searchOrder = [];
+      for (let r = myRankIdx; r >= 0; r--) searchOrder.push(r);
+      for (let r = myRankIdx + 1; r <= 4; r++) searchOrder.push(r);
 
-      await remove(ref(db, `matchmaking/queue/${opponentUid}`));
+      for (const targetRank of searchOrder) {
+        for (const uid of waiterUids) {
+          const waiterRankIdx = (waiters[uid].rankIndex !== undefined) ? waiters[uid].rankIndex : 0;
+          if (waiterRankIdx === targetRank) {
+            bestMatch = { uid, data: waiters[uid] };
+            break;
+          }
+        }
+        if (bestMatch) break;
+      }
+
+      // Fallback: take the first waiter if no exact match found
+      if (!bestMatch) {
+        bestMatch = { uid: waiterUids[0], data: waiters[waiterUids[0]] };
+      }
+
+      await remove(ref(db, `matchmaking/queue/${bestMatch.uid}`));
 
       const gameId = await createGameRoom(
         user.uid, userData.username,
-        opponentUid, opponentData.username
+        bestMatch.uid, bestMatch.data.username,
+        'play'
       );
 
       if (onMatchFound) onMatchFound(gameId);
@@ -77,11 +104,13 @@ export async function joinMatchmakingQueue() {
     }
   }
 
-  // No one waiting — add to queue
+  // No one waiting — add to queue with rank info
   const myQueueRef = ref(db, `matchmaking/queue/${user.uid}`);
   await set(myQueueRef, {
     username: userData.username,
     playerId: userData.playerId,
+    rankIndex: myRankIdx,
+    rankName: myRank.name,
     joinedAt: Date.now()
   });
 
@@ -119,13 +148,14 @@ export async function leaveMatchmakingQueue() {
 //  GAME ROOM CREATION
 // ═══════════════════════════════════════
 
-async function createGameRoom(uid1, username1, uid2, username2) {
+async function createGameRoom(uid1, username1, uid2, username2, gameMode = 'vs') {
   const gameRef = push(ref(db, 'games'));
   const gameId = gameRef.key;
   const now = Date.now();
 
   const gameData = {
     status: 'playing',
+    gameMode: gameMode,
     createdAt: now,
     gameStartedAt: now,
     gameEndsAt: now + 90000,
@@ -154,6 +184,7 @@ async function createGameRoom(uid1, username1, uid2, username2) {
         powerUpsUsed: 0
       }
     },
+    chat: {},
     lastMove: null
   };
 

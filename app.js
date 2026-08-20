@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════
-//  Main Application Controller — All fixes applied
+//  Main Application Controller — BlockHead
 // ═══════════════════════════════════════
 import {
   initAuth,
@@ -40,8 +40,14 @@ import {
   usePowerRotate,
   usePowerHammer,
   usePowerRefresh,
+  sendChatMessage,
   setGameCallbacks
 } from './game.js';
+import {
+  loadLeaderboard,
+  formatNumber,
+  getRankFromPoints
+} from './ranking.js';
 
 // ═══════ Screen Management ═══════
 const SCREENS = {
@@ -51,12 +57,14 @@ const SCREENS = {
   matchmaking: document.getElementById('screen-matchmaking'),
   vs: document.getElementById('screen-vs'),
   profile: document.getElementById('screen-profile'),
+  leaderboard: document.getElementById('screen-leaderboard'),
   game: document.getElementById('screen-game'),
   friendRequests: document.getElementById('screen-friend-requests')
 };
 
 let currentScreen = 'auth';
 let activeVsTab = 'online';
+let activeLeaderboardTab = 'ranking';
 let onlinePlayersCache = [];
 let friendsCache = [];
 let friendRequestsCache = [];
@@ -102,7 +110,7 @@ setMatchmakingCallbacks({
     sound.play('matchFound');
     showToast('Match found! Starting game...', 'success');
     switchScreen('game');
-    startGame(gameId);
+    startGame(gameId, 'play');
   },
   onInvite: (invite) => {
     sound.play('invite');
@@ -223,6 +231,7 @@ window.handleLogout = async () => {
 // ── Navigation ──
 window.showMenu = () => {
   sound.play('click');
+  updateMenuUserInfo();
   switchScreen('menu');
 };
 
@@ -261,6 +270,149 @@ window.showFriendRequests = () => {
   renderFriendRequests();
 };
 
+// ── Leaderboard ──
+window.showLeaderboard = () => {
+  sound.play('click');
+  switchScreen('leaderboard');
+  renderLeaderboardTab(activeLeaderboardTab);
+};
+
+window.switchLeaderboardTab = (tab) => {
+  sound.play('click');
+  activeLeaderboardTab = tab;
+
+  document.getElementById('lb-tab-ranking').classList.toggle('active', tab === 'ranking');
+  document.getElementById('lb-tab-topBlock').classList.toggle('active', tab === 'topBlock');
+  document.getElementById('lb-tab-wins').classList.toggle('active', tab === 'wins');
+
+  const descEl = document.getElementById('leaderboard-desc');
+  if (descEl) {
+    if (tab === 'ranking') descEl.textContent = 'Top 100 players by total points in Play mode';
+    else if (tab === 'topBlock') descEl.textContent = 'Top 100 players by rows cleared in Play mode';
+    else if (tab === 'wins') descEl.textContent = 'Top 100 players by match victories in Play mode';
+  }
+
+  renderLeaderboardTab(tab);
+};
+
+async function renderLeaderboardTab(tab) {
+  const listEl = document.getElementById('leaderboard-list');
+  if (!listEl) return;
+
+  listEl.innerHTML = '<div class="vs-empty"><span class="spinner-small"></span> Loading Top 100...</div>';
+
+  try {
+    const data = await loadLeaderboard(tab);
+    const currentUser = getCurrentUser();
+
+    if (!data || data.length === 0) {
+      listEl.innerHTML = '<div class="vs-empty">No ranking records yet. Play matches to climb the leaderboard!</div>';
+      return;
+    }
+
+    listEl.innerHTML = '';
+    data.forEach(entry => {
+      const card = document.createElement('div');
+      const isMe = (currentUser && entry.uid === currentUser.uid);
+      card.className = `lb-player-card ${isMe ? 'is-me' : ''}`;
+
+      // Rank position styling (1st = Gold, 2nd = Silver, 3rd = Bronze)
+      let posBadge = `#${entry.position}`;
+      let posClass = 'lb-pos-regular';
+      if (entry.position === 1) { posBadge = '🥇 #1'; posClass = 'lb-pos-1'; }
+      else if (entry.position === 2) { posBadge = '🥈 #2'; posClass = 'lb-pos-2'; }
+      else if (entry.position === 3) { posBadge = '🥉 #3'; posClass = 'lb-pos-3'; }
+
+      let valueLabel = 'pts';
+      if (tab === 'topBlock') valueLabel = 'rows';
+      else if (tab === 'wins') valueLabel = 'wins';
+
+      card.innerHTML = `
+        <div class="lb-pos ${posClass}">${posBadge}</div>
+        <div class="lb-player-info">
+          <div class="lb-player-name">${entry.username} ${isMe ? '<span class="lb-me-tag">(You)</span>' : ''}</div>
+          <div class="lb-player-rank" style="color: ${entry.rank.color};">
+            ${entry.rank.badge} ${entry.rank.name}
+          </div>
+        </div>
+        <div class="lb-player-value">
+          <span class="lb-val-num">${formatNumber(entry.value)}</span>
+          <span class="lb-val-label">${valueLabel}</span>
+        </div>
+      `;
+      listEl.appendChild(card);
+    });
+  } catch (e) {
+    console.error('Leaderboard render error:', e);
+    listEl.innerHTML = '<div class="vs-empty">Failed to load leaderboard. Please try again.</div>';
+  }
+}
+
+// ── In-Game Chat Handlers ──
+window.openChatModal = () => {
+  sound.play('click');
+  const modal = document.getElementById('chat-modal');
+  const input = document.getElementById('chat-input');
+  const counter = document.getElementById('chat-char-counter');
+  if (modal) modal.classList.add('active');
+  if (input) {
+    input.value = '';
+    setTimeout(() => input.focus(), 100);
+  }
+  if (counter) counter.textContent = '0/90';
+};
+
+window.closeChatModal = () => {
+  sound.play('click');
+  const modal = document.getElementById('chat-modal');
+  if (modal) modal.classList.remove('active');
+};
+
+window.sendPresetChat = async (text) => {
+  sound.play('click');
+  window.closeChatModal();
+  try {
+    await sendChatMessage(text);
+  } catch (err) {
+    console.error('Chat error:', err);
+  }
+};
+
+window.sendCustomChat = async () => {
+  const input = document.getElementById('chat-input');
+  if (!input) return;
+  const text = input.value.trim();
+  if (!text) return;
+
+  sound.play('click');
+  window.closeChatModal();
+  input.value = '';
+
+  try {
+    await sendChatMessage(text);
+  } catch (err) {
+    console.error('Chat send error:', err);
+  }
+};
+
+// Chat input events
+const chatInputEl = document.getElementById('chat-input');
+if (chatInputEl) {
+  chatInputEl.addEventListener('input', () => {
+    const counter = document.getElementById('chat-char-counter');
+    if (counter) {
+      counter.textContent = `${chatInputEl.value.length}/90`;
+    }
+  });
+
+  chatInputEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      window.sendCustomChat();
+    }
+  });
+}
+
 // ── BGM toggle (only background music) ──
 function updateBGMButton() {
   const btn = document.getElementById('menu-mute-btn');
@@ -287,11 +439,10 @@ function renderVsList() {
 
   list.innerHTML = '';
   if (!players || players.length === 0) {
-    list.innerHTML = `<div class="vs-empty">${
-      activeVsTab === 'online'
-        ? 'No other players online right now'
-        : 'No friends added yet. Search by Player ID above!'
-    }</div>`;
+    list.innerHTML = `<div class="vs-empty">${activeVsTab === 'online'
+      ? 'No other players online right now'
+      : 'No friends added yet. Search by Player ID above!'
+      }</div>`;
     return;
   }
 
@@ -446,6 +597,7 @@ window.returnToMenu = () => {
   sound.play('click');
   document.getElementById('result-overlay').classList.remove('active');
   cleanupGame();
+  updateMenuUserInfo();
   switchScreen('menu');
 };
 
@@ -469,3 +621,11 @@ window.confirmSurrenderAction = async () => {
 window.usePowerRotate = usePowerRotate;
 window.usePowerHammer = usePowerHammer;
 window.usePowerRefresh = usePowerRefresh;
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js')
+      .then((reg) => console.log('Service Worker registered!'))
+      .catch((err) => console.log('Service Worker registration failed: ', err));
+  });
+}

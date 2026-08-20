@@ -3,16 +3,30 @@
 
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-  <title>Block Puzzle Online</title>
-  <meta name="description" content="Play Block Puzzle online against other players! Competitive multiplayer block puzzle game.">
+  <meta name="viewport"
+    content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>BlockHead</title>
+  <meta name="description"
+    content="Play BlockHead online against other players! Competitive multiplayer block puzzle game with ranking and chat.">
   <link rel="stylesheet" href="style.css">
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧩</text></svg>">
+  <link rel="icon" href="logo.png">
   <!-- Prevent iOS zoom on double tap & pinch -->
   <style>
-    * { -webkit-touch-callout: none; }
-    html { touch-action: manipulation; }
+    * {
+      -webkit-touch-callout: none;
+    }
+
+    html {
+      touch-action: manipulation;
+    }
   </style>
+
+  <link rel="manifest" href="manifest.json">
+  <!-- Support for Apple iOS Safari -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="BlockHead">
+  <link rel="apple-touch-icon" href="logo.png">
 </head>
 
 <body>
@@ -22,8 +36,9 @@
   ═══════════════════════════════════════ -->
   <div id="screen-auth" class="screen active">
     <div class="auth-container">
-      <div class="auth-logo">BLOCK<br>PUZZLE</div>
-      <div class="auth-logo-sub">⚡ ONLINE MULTIPLAYER ⚡</div>
+      <div class="auth-logo-wrapper">
+        <img src="logo.png" alt="BlockHead" class="auth-logo-img">
+      </div>
 
       <div class="auth-card">
         <button class="auth-btn google-btn" id="btn-google-login" onclick="handleGoogleLogin()">
@@ -39,7 +54,9 @@
         </button>
       </div>
 
-      <div id="auth-status" style="font-family: var(--font-ui); font-size: 12px; color: rgba(255,245,214,0.5); min-height: 18px; text-align: center;"></div>
+      <div id="auth-status"
+        style="font-family: var(--font-ui); font-size: 12px; color: rgba(255,245,214,0.5); min-height: 18px; text-align: center;">
+      </div>
     </div>
   </div>
 
@@ -51,8 +68,8 @@
       <div class="auth-logo" style="font-size: clamp(28px, 8vw, 40px);">CHOOSE YOUR NAME</div>
 
       <div class="username-card">
-        <input type="text" class="username-input" id="username-input" placeholder="Enter username"
-          maxlength="14" autocomplete="off" spellcheck="false">
+        <input type="text" class="username-input" id="username-input" placeholder="Enter username" maxlength="14"
+          autocomplete="off" spellcheck="false">
         <div class="username-hint">
           Letters and numbers only • Max 14 characters • No spaces
         </div>
@@ -71,15 +88,20 @@
   <div id="screen-menu" class="screen">
     <div class="menu-container">
       <div class="menu-header">
-        <div class="menu-title">BLOCK PUZZLE</div>
-        <div class="menu-subtitle">ONLINE MULTIPLAYER</div>
+        <img src="logo.png" alt="BlockHead" class="menu-logo-img">
       </div>
 
       <div class="menu-user-bar">
-        <div class="menu-user-avatar">🎮</div>
+        <div class="menu-user-avatar" id="menu-user-avatar">🎮</div>
         <div class="menu-user-info">
-          <div class="menu-user-name" id="menu-username">Player</div>
-          <div class="menu-user-id" id="menu-player-id">ID: --------</div>
+          <div class="menu-user-row-top">
+            <div class="menu-user-name" id="menu-username">Player</div>
+            <span class="menu-rank-badge" id="menu-rank-badge">🥉 Bronze</span>
+          </div>
+          <div class="menu-user-row-bottom">
+            <div class="menu-user-id" id="menu-player-id">ID: --------</div>
+            <div class="menu-user-points" id="menu-user-points">⭐ 0 pts</div>
+          </div>
         </div>
       </div>
 
@@ -92,6 +114,10 @@
           <span class="btn-icon">⚔️</span>
           VS
         </button>
+        <button class="menu-btn leaderboard-btn" onclick="showLeaderboard()">
+          <span class="btn-icon">🏆</span>
+          LEADERBOARD
+        </button>
         <button class="menu-btn profile-btn" onclick="showProfile()">
           <span class="btn-icon">👤</span>
           PROFILE
@@ -99,14 +125,17 @@
       </div>
 
       <!-- Friend Requests Button -->
-      <button class="menu-btn" style="background: var(--ink); border-color: var(--yellow); font-size: 16px; padding: 10px;" onclick="showFriendRequests()">
+      <button class="menu-btn"
+        style="background: var(--ink); border-color: var(--yellow); font-size: 16px; padding: 10px;"
+        onclick="showFriendRequests()">
         <span class="btn-icon">📬</span>
         FRIEND REQUESTS
         <span class="fr-badge hidden" id="fr-badge">0</span>
       </button>
 
       <div class="menu-footer">
-        <button class="menu-footer-btn" id="menu-mute-btn" onclick="toggleMenuMute()" title="Toggle Background Music">🔇</button>
+        <button class="menu-footer-btn" id="menu-mute-btn" onclick="toggleMenuMute()"
+          title="Toggle Background Music">🔇</button>
         <button class="menu-footer-btn" id="menu-logout-btn" onclick="handleLogout()">🚪</button>
       </div>
     </div>
@@ -118,8 +147,41 @@
   <div id="screen-matchmaking" class="screen">
     <div class="matchmaking-container">
       <div class="matchmaking-spinner"></div>
-      <div class="matchmaking-text">Searching for opponent<span class="matchmaking-dots" id="matchmaking-dots">...</span></div>
+      <div class="matchmaking-text">Searching for opponent<span class="matchmaking-dots"
+          id="matchmaking-dots">...</span></div>
       <button class="cancel-btn" onclick="cancelMatchmaking()">✖ CANCEL</button>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════
+       SCREEN: LEADERBOARD (Top 100)
+  ═══════════════════════════════════════ -->
+  <div id="screen-leaderboard" class="screen">
+    <div class="leaderboard-container">
+      <div class="vs-header">
+        <button class="back-btn" onclick="showMenu()">◀</button>
+        <div class="vs-title">🏆 LEADERBOARD</div>
+      </div>
+
+      <div class="leaderboard-tabs">
+        <button class="lb-tab active" id="lb-tab-ranking" onclick="switchLeaderboardTab('ranking')">
+          🏆 Ranking
+        </button>
+        <button class="lb-tab" id="lb-tab-topBlock" onclick="switchLeaderboardTab('topBlock')">
+          🧱 Top Block
+        </button>
+        <button class="lb-tab" id="lb-tab-wins" onclick="switchLeaderboardTab('wins')">
+          👑 Wins
+        </button>
+      </div>
+
+      <div class="leaderboard-desc" id="leaderboard-desc">
+        Top 100 players by total points in Play mode
+      </div>
+
+      <div class="leaderboard-list" id="leaderboard-list">
+        <div class="vs-empty">Loading top 100 players...</div>
+      </div>
     </div>
   </div>
 
@@ -161,22 +223,42 @@
       </div>
 
       <div class="profile-card">
-        <div class="profile-avatar">🎮</div>
+        <div class="profile-avatar" id="profile-avatar">🎮</div>
         <div class="profile-name" id="profile-name">Player</div>
         <div class="profile-id" id="profile-id">ID: --------</div>
 
+        <!-- Rank Card -->
+        <div class="profile-rank-card" id="profile-rank-card">
+          <div class="profile-rank-header">
+            <span class="profile-rank-badge" id="profile-rank-badge">🥉</span>
+            <div class="profile-rank-info">
+              <div class="profile-rank-name" id="profile-rank-name">Bronze</div>
+              <div class="profile-rank-pts" id="profile-rank-pts">0 Points</div>
+            </div>
+          </div>
+          <div class="rank-progress-bar">
+            <div class="rank-progress-fill" id="rank-progress-fill" style="width: 0%"></div>
+          </div>
+          <div class="rank-progress-hint" id="rank-progress-hint">Next: 💎 Platinum (3,001 pts)</div>
+        </div>
+
+        <!-- Stats Grid -->
         <div class="profile-stats">
           <div class="stat-box">
-            <div class="stat-value" id="stat-played">0</div>
-            <div class="stat-label">Games</div>
+            <div class="stat-value" id="stat-points">0</div>
+            <div class="stat-label">Play Points</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-value" id="stat-rows">0</div>
+            <div class="stat-label">Rows Destroyed</div>
           </div>
           <div class="stat-box">
             <div class="stat-value" id="stat-wins">0</div>
-            <div class="stat-label">Wins</div>
+            <div class="stat-label">Play Wins</div>
           </div>
           <div class="stat-box">
-            <div class="stat-value" id="stat-losses">0</div>
-            <div class="stat-label">Losses</div>
+            <div class="stat-value" id="stat-played">0</div>
+            <div class="stat-label">Total Games</div>
           </div>
           <div class="stat-box full-width">
             <div class="stat-value" id="stat-winrate">0%</div>
@@ -189,8 +271,8 @@
       </div>
 
       <div class="profile-guest-warn hidden" id="guest-warning">
-        ⚠️ Guest account expires in <span id="guest-days-left">30</span> days.
-        Sign in with Google to keep your progress!
+        ⚠️ Guest accounts do not participate in Rankings.
+        Sign in with Google to earn Rank points & compete on Leaderboards!
       </div>
     </div>
   </div>
@@ -215,10 +297,16 @@
        SCREEN: GAME (Multiplayer)
   ═══════════════════════════════════════ -->
   <div id="screen-game" class="screen">
+    <!-- In-Game Floating Chat Bubbles -->
+    <div class="chat-bubbles-container" id="chat-bubbles-container"></div>
+
     <div class="game-container">
-      <!-- Game Header: Leave btn + Scores + Timer -->
+      <!-- Game Header: Leave btn + Chat btn + Scores + Timer -->
       <div class="game-header">
-        <button class="game-leave-btn" onclick="handleSurrender()" title="Leave Match">🚪</button>
+        <div style="display: flex; gap: 4px; align-items: center;">
+          <button class="game-leave-btn" onclick="handleSurrender()" title="Leave Match">🚪</button>
+          <button class="game-chat-btn" id="game-chat-btn" onclick="openChatModal()" title="Quick Chat">💬</button>
+        </div>
 
         <div class="game-player-score is-me" id="gps-me">
           <span class="gps-avatar">🔵</span>
@@ -255,7 +343,8 @@
       <div id="inventory"></div>
 
       <!-- Coins display -->
-      <div style="display: flex; align-items: center; gap: 10px; width: calc(100% - 24px); max-width: 480px; justify-content: center; margin-top: 4px;">
+      <div
+        style="display: flex; align-items: center; gap: 10px; width: calc(100% - 24px); max-width: 480px; justify-content: center; margin-top: 4px;">
         <div class="game-coins" id="game-coins">
           <span class="game-coins-icon">🪙</span>
           <span class="game-coins-val" id="game-coins-val">100</span>
@@ -285,6 +374,36 @@
 
     <!-- Combo Banner -->
     <div id="combo-banner">✨ COMBO! ✨</div>
+  </div>
+
+  <!-- ═══════════════════════════════════════
+       IN-GAME CHAT MODAL
+  ═══════════════════════════════════════ -->
+  <div class="invite-overlay" id="chat-modal">
+    <div class="chat-card">
+      <div class="chat-header">
+        <div class="chat-title">💬 QUICK CHAT</div>
+        <button class="chat-close-btn" onclick="closeChatModal()">✖</button>
+      </div>
+
+      <!-- Quick Preset Messages -->
+      <div class="chat-presets">
+        <button class="chat-preset-btn" onclick="sendPresetChat('Good luck! 🍀')">Good luck! 🍀</button>
+        <button class="chat-preset-btn" onclick="sendPresetChat('Nice move! 🔥')">Nice move! 🔥</button>
+        <button class="chat-preset-btn" onclick="sendPresetChat('Oops! 😅')">Oops! 😅</button>
+        <button class="chat-preset-btn" onclick="sendPresetChat('Well played! 👏')">Well played! 👏</button>
+        <button class="chat-preset-btn" onclick="sendPresetChat('Good game! 🏆')">Good game! 🏆</button>
+        <button class="chat-preset-btn" onclick="sendPresetChat('Thinking... 🤔')">Thinking... 🤔</button>
+      </div>
+
+      <!-- Custom Text Input (Max 90 chars) -->
+      <div class="chat-input-row">
+        <input type="text" class="chat-input" id="chat-input" placeholder="Type a message (max 90)..." maxlength="90"
+          autocomplete="off" spellcheck="false">
+        <button class="chat-send-btn" id="chat-send-btn" onclick="sendCustomChat()">🚀</button>
+      </div>
+      <div class="chat-char-counter" id="chat-char-counter">0/90</div>
+    </div>
   </div>
 
   <!-- ═══════════════════════════════════════
@@ -382,4 +501,5 @@
   <script type="module" src="app.js"></script>
 
 </body>
+
 </html>
